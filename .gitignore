@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+target/
+*.tsbuildinfo
+.ark/
+.DS_Store
+apps/indexer/data/*.sqlite*

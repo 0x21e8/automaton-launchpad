@@ -1,0 +1,7 @@
+COMPLETED
+
+Implemented the M03 web shell and design-system baseline in [App.tsx](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/App.tsx), [styles.css](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/styles.css), [tokens.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/theme/tokens.ts), and updated [App.test.tsx](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/App.test.tsx). Wrote the required milestone artifacts in [M03.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M03.md) and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
+
+Validation passed for `test -f apps/web/src/App.tsx`, `test -f apps/web/src/theme/tokens.ts`, `rg "Instrument Serif|Azeret Mono|CONNECT WALLET|LIVE" apps/web/src`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory`.
+
+No blocker should stop the next loop iteration.

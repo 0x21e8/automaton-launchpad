@@ -1,0 +1,173 @@
+==> test -f backend/factory/src/escrow.rs
+==> test -f backend/factory/src/spawn.rs
+==> test -f backend/factory/src/controllers.rs
+==> test -f backend/factory/src/init.rs
+==> rg "@fastify/websocket|better-sqlite3" apps/indexer/package.json
+    "@fastify/websocket": "^11.2.0",
+    "better-sqlite3": "^12.6.2",
+==> rg "@fastify/websocket|better-sqlite3" apps/indexer/src
+apps/indexer/src/store/sqlite.ts:const BetterSqlite3 = require("better-sqlite3") as BetterSqliteConstructor;
+apps/indexer/src/store/sqlite.ts:  driver: "better-sqlite3";
+apps/indexer/src/store/sqlite.ts:      driver: "better-sqlite3",
+apps/indexer/src/server.ts:import websocket from "@fastify/websocket";
+==> rg "sessionId|funding_automaton|controller|quoteTermsHash" backend/factory/src
+backend/factory/src/spawn.rs:use crate::controllers::complete_controller_handoff;
+backend/factory/src/spawn.rs:                    controller: format!(
+backend/factory/src/spawn.rs:                        "controller:{}",
+backend/factory/src/spawn.rs:        let controller = complete_controller_handoff(&mut runtime, "factory")?;
+backend/factory/src/spawn.rs:            "spawn completed and controller handoff finalized",
+backend/factory/src/spawn.rs:            controller,
+backend/factory/src/init.rs:        controllers: vec!["factory".to_string()],
+backend/factory/src/controllers.rs:pub fn add_controller(runtime: &mut AutomatonRuntimeState, controller: &str) {
+backend/factory/src/controllers.rs:    if runtime.controllers.iter().all(|entry| entry != controller) {
+backend/factory/src/controllers.rs:        runtime.controllers.push(controller.to_string());
+backend/factory/src/controllers.rs:pub fn remove_controller(runtime: &mut AutomatonRuntimeState, controller: &str) {
+backend/factory/src/controllers.rs:    runtime.controllers.retain(|entry| entry != controller);
+backend/factory/src/controllers.rs:pub fn complete_controller_handoff(
+backend/factory/src/controllers.rs:    factory_controller: &str,
+backend/factory/src/controllers.rs:    let self_controller = runtime.canister_id.clone();
+backend/factory/src/controllers.rs:    add_controller(runtime, &self_controller);
+backend/factory/src/controllers.rs:    remove_controller(runtime, factory_controller);
+backend/factory/src/controllers.rs:    if runtime.controllers != vec![self_controller.clone()] {
+backend/factory/src/controllers.rs:    let controller = format!("{CONTROLLER_FIELD}:{self_controller}");
+backend/factory/src/controllers.rs:    Ok(controller)
+backend/factory/src/lib.rs:pub mod controllers;
+backend/factory/src/lib.rs:    fn executes_spawn_after_paid_claim_and_hands_off_controller() {
+backend/factory/src/lib.rs:            runtime.controllers,
+backend/factory/src/types.rs:pub const QUOTE_TERMS_HASH_FIELD: &str = "quoteTermsHash";
+backend/factory/src/types.rs:pub const SESSION_ID_FIELD: &str = "sessionId";
+backend/factory/src/types.rs:pub const FUNDING_AUTOMATON_STATE: &str = "funding_automaton";
+backend/factory/src/types.rs:pub const CONTROLLER_FIELD: &str = "controller";
+backend/factory/src/types.rs:    pub controllers: Vec<String>,
+backend/factory/src/types.rs:    pub controller: String,
+backend/factory/src/types.rs:                write!(f, "controller invariant violation for {canister_id}")
+==> npm run lint
+
+> ic-automaton-launchpad@0.1.0 lint
+> npm run lint --workspace @ic-automaton/shared && npm run lint --workspace @ic-automaton/indexer && npm run lint --workspace @ic-automaton/web && npm run lint:factory
+
+
+> @ic-automaton/shared@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/indexer@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/web@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s
+==> npm run build
+
+> ic-automaton-launchpad@0.1.0 build
+> npm run build --workspace @ic-automaton/shared && npm run build --workspace @ic-automaton/indexer && npm run build --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/indexer@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/web@0.1.0 build
+> tsc -p tsconfig.json --noEmit && vite build
+
+vite v7.3.1 building client environment for production...
+transforming...
+✓ 44 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.40 kB │ gzip:  0.27 kB
+dist/assets/index-DWpCclm5.css   19.94 kB │ gzip:  4.47 kB
+dist/assets/index-D4B_sE-6.js   192.05 kB │ gzip: 61.02 kB
+✓ built in 487ms
+==> npm run test
+
+> ic-automaton-launchpad@0.1.0 test
+> npm run test --workspace @ic-automaton/shared && npm run test --workspace @ic-automaton/indexer && npm run test --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared[39m
+
+ [32m✓[39m test/contracts.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m   Start at [22m 13:58:27
+[2m   Duration [22m 132ms[2m (transform 36ms, setup 0ms, import 45ms, tests 3ms, environment 0ms)[22m
+
+
+> @ic-automaton/indexer@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer[39m
+
+ [32m✓[39m test/realtime.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/sqlite.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m test/server.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 97[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 13:58:27
+[2m   Duration [22m 383ms[2m (transform 193ms, setup 0ms, import 327ms, tests 117ms, environment 0ms)[22m
+
+
+> @ic-automaton/web@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/web[39m
+
+ [32m✓[39m src/components/spawn/spawn-state.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/App.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 13:58:28
+[2m   Duration [22m 259ms[2m (transform 151ms, setup 0ms, import 211ms, tests 33ms, environment 0ms)[22m
+
+==> npm run lint:factory
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+==> npm run test:factory
+
+> ic-automaton-launchpad@0.1.0 test:factory
+> cargo test -p factory
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/factory-bdda94b641d2f6fb)
+
+running 8 tests
+test tests::exposes_bootstrap_identity ... ok
+test tests::rejects_session_creation_while_paused ... ok
+test tests::updates_admin_quote_configuration ... ok
+test tests::snapshots_and_restores_upgrade_safe_state ... ok
+test tests::paginates_registry_reads ... ok
+test tests::creates_sessions_with_fixed_quote_terms_and_audit_log ... ok
+test tests::executes_spawn_after_paid_claim_and_hands_off_controller ... ok
+test tests::keeps_underfunded_claims_awaiting_payment ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests factory
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

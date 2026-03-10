@@ -1,0 +1,244 @@
+==> test -f apps/web/src/api/spawn.ts
+==> test -f apps/web/src/hooks/useSpawnSession.ts
+==> test -f apps/web/src/lib/cli-commands/provider-config.ts
+==> rg "sessionId|retry|refund|OpenRouter|Brave" apps/web/src
+apps/web/src/api/ws.ts:  sessionId?: string;
+apps/web/src/api/ws.ts:      sessionId: filter.sessionId
+apps/web/src/App.tsx:  "Spawn progress tracks factory/indexer session state and keeps payment, retry, and refund eligibility visible in the wizard.",
+apps/web/src/App.tsx:  "Provider inputs still remain optional at spawn time, and the steward shell now exposes post-spawn OpenRouter and Brave update commands."
+apps/web/src/lib/cli-commands/provider-config.ts:  return `OpenRouter key: ${redactSecret(state.openRouterApiKey)} | Model: ${state.model ?? "not configured"} | Brave Search key: ${redactSecret(state.braveSearchApiKey)}`;
+apps/web/src/lib/cli-commands/provider-config.ts:        response: `OpenRouter API key staged for signed steward update (${redactSecret(secret)}).`
+apps/web/src/lib/cli-commands/provider-config.ts:        response: "OpenRouter API key cleared from the staged steward command."
+apps/web/src/lib/cli-commands/provider-config.ts:        response: `Brave Search API key staged for signed steward update (${redactSecret(secret)}).`
+apps/web/src/lib/cli-commands/provider-config.ts:        response: "Brave Search API key cleared from the staged steward command."
+apps/web/src/api/openrouter.ts:interface OpenRouterModelRecord {
+apps/web/src/api/openrouter.ts:interface OpenRouterResponse {
+apps/web/src/api/openrouter.ts:  data?: OpenRouterModelRecord[];
+apps/web/src/api/openrouter.ts:function normalizeModel(record: OpenRouterModelRecord): ProviderModelOption | null {
+apps/web/src/api/openrouter.ts:        : "Live OpenRouter catalog entry.",
+apps/web/src/api/openrouter.ts:export async function fetchOpenRouterModels(
+apps/web/src/api/openrouter.ts:    throw new Error(`OpenRouter catalog request failed with ${response.status}.`);
+apps/web/src/api/openrouter.ts:  const payload = (await response.json()) as OpenRouterResponse;
+apps/web/src/api/openrouter.ts:    throw new Error("OpenRouter returned an empty model catalog.");
+apps/web/src/api/spawn.ts:  sessionId: string,
+apps/web/src/api/spawn.ts:  return requestIndexerJson<SpawnSessionDetail>(`/api/spawn-sessions/${sessionId}`, {
+apps/web/src/api/spawn.ts:export async function retrySpawnSession(
+apps/web/src/api/spawn.ts:  sessionId: string,
+apps/web/src/api/spawn.ts:    `/api/spawn-sessions/${sessionId}/retry`,
+apps/web/src/api/spawn.ts:export async function refundSpawnSession(
+apps/web/src/api/spawn.ts:  sessionId: string,
+apps/web/src/api/spawn.ts:    `/api/spawn-sessions/${sessionId}/refund`,
+apps/web/src/lib/cli-commands/provider-config.test.ts:  it("stages OpenRouter and Brave updates for steward commands", () => {
+apps/web/src/lib/cli-commands/provider-config.test.ts:    const stagedOpenRouter = applyProviderConfigCommand(
+apps/web/src/lib/cli-commands/provider-config.test.ts:    const stagedBrave = applyProviderConfigCommand(
+apps/web/src/lib/cli-commands/provider-config.test.ts:      stagedOpenRouter!.nextState
+apps/web/src/lib/cli-commands/provider-config.test.ts:    expect(stagedOpenRouter?.response).toContain("OpenRouter API key");
+apps/web/src/lib/cli-commands/provider-config.test.ts:    expect(stagedBrave?.response).toContain("Brave Search API key");
+apps/web/src/lib/cli-commands/provider-config.test.ts:    expect(stagedBrave?.nextState).toMatchObject({
+apps/web/src/lib/cli-commands/provider-config.test.ts:    expect(result?.response).toContain("OpenRouter key");
+apps/web/src/lib/cli-commands/provider-config.test.ts:    expect(result?.response).toContain("Brave Search key");
+apps/web/src/lib/default-models.ts:    label: "OpenRouter Auto",
+apps/web/src/lib/default-models.ts:      "OpenRouter routes to a broadly available default when you want minimal provider tuning.",
+apps/web/src/lib/default-models.ts:      "Fast multimodal-capable fallback for lightweight inference when OpenRouter catalog loading fails.",
+apps/web/src/lib/default-models.ts:      "Open-weight fallback option for stewards who want a capable default before adding Brave search.",
+apps/web/src/hooks/useSpawnSession.test.ts:    sessionId: "session-1",
+apps/web/src/hooks/useSpawnSession.test.ts:    retryable: false,
+apps/web/src/hooks/useSpawnSession.test.ts:    refundable: false,
+apps/web/src/hooks/useSpawnSession.test.ts:  it("describes retry and refund-eligible session states", () => {
+apps/web/src/hooks/useSpawnSession.test.ts:          retryable: true,
+apps/web/src/hooks/useSpawnSession.test.ts:          refundable: true,
+apps/web/src/hooks/useSpawnSession.test.ts:      sessionId: session.sessionId,
+apps/web/src/hooks/useSpawnSession.test.ts:        sessionId: session.sessionId,
+apps/web/src/hooks/useSpawnSession.test.ts:        sessionId: session.sessionId,
+apps/web/src/hooks/useSpawnSession.test.ts:        refundable: false,
+apps/web/src/hooks/useSpawnSession.test.ts:        refundedAt: null,
+apps/web/src/hooks/useSpawnSession.ts:  refundSpawnSession,
+apps/web/src/hooks/useSpawnSession.ts:  retrySpawnSession
+apps/web/src/hooks/useSpawnSession.ts:  return session.state === "expired" && session.paymentStatus === "refunded";
+apps/web/src/hooks/useSpawnSession.ts:      return session.retryable
+apps/web/src/hooks/useSpawnSession.ts:        : "Spawn failed and is waiting for expiration before any refund path opens.";
+apps/web/src/hooks/useSpawnSession.ts:      return session.refundable
+apps/web/src/hooks/useSpawnSession.ts:        ? "This session expired unresolved. Funds can now be reclaimed through refund."
+apps/web/src/hooks/useSpawnSession.ts:  const [sessionId, setSessionId] = useState<string | null>(null);
+apps/web/src/hooks/useSpawnSession.ts:  async function refresh(targetSessionId = sessionId) {
+apps/web/src/hooks/useSpawnSession.ts:    if (sessionId === null) {
+apps/web/src/hooks/useSpawnSession.ts:    void refresh(sessionId);
+apps/web/src/hooks/useSpawnSession.ts:  }, [refreshToken, sessionId]);
+apps/web/src/hooks/useSpawnSession.ts:    if (sessionId === null || isPollingComplete(session)) {
+apps/web/src/hooks/useSpawnSession.ts:  }, [session, sessionId]);
+apps/web/src/hooks/useSpawnSession.ts:    if (sessionId === null) {
+apps/web/src/hooks/useSpawnSession.ts:        sessionId
+apps/web/src/hooks/useSpawnSession.ts:  }, [sessionId]);
+apps/web/src/hooks/useSpawnSession.ts:    sessionId,
+apps/web/src/hooks/useSpawnSession.ts:        setSessionId(response.session.sessionId);
+apps/web/src/hooks/useSpawnSession.ts:    async retry() {
+apps/web/src/hooks/useSpawnSession.ts:      if (sessionId === null) {
+apps/web/src/hooks/useSpawnSession.ts:        await retrySpawnSession(sessionId);
+apps/web/src/hooks/useSpawnSession.ts:        return await refresh(sessionId);
+apps/web/src/hooks/useSpawnSession.ts:    async refund() {
+apps/web/src/hooks/useSpawnSession.ts:      if (sessionId === null) {
+apps/web/src/hooks/useSpawnSession.ts:        await refundSpawnSession(sessionId);
+apps/web/src/hooks/useSpawnSession.ts:        return await refresh(sessionId);
+apps/web/src/components/spawn/SpawnWizard.tsx:import { fetchOpenRouterModels } from "../../api/openrouter";
+apps/web/src/components/spawn/SpawnWizard.tsx:    setModelStatusMessage("Loading live OpenRouter models.");
+apps/web/src/components/spawn/SpawnWizard.tsx:    void fetchOpenRouterModels(controller.signal)
+apps/web/src/components/spawn/SpawnWizard.tsx:        setModelStatusMessage("Loaded live OpenRouter models.");
+apps/web/src/components/spawn/SpawnWizard.tsx:          "OpenRouter catalog unavailable, using curated fallback models."
+apps/web/src/components/spawn/SpawnWizard.tsx:  const hasTrackedSession = spawnSession.sessionId !== null;
+apps/web/src/components/spawn/SpawnWizard.tsx:      activeSession.sessionId === reportedCompletionSessionId
+apps/web/src/components/spawn/SpawnWizard.tsx:    setReportedCompletionSessionId(activeSession.sessionId);
+apps/web/src/components/spawn/SpawnWizard.tsx:              onBraveSearchApiKeyChange={(value) => {
+apps/web/src/components/spawn/SpawnWizard.tsx:              onOpenRouterApiKeyChange={(value) => {
+apps/web/src/components/spawn/SpawnWizard.tsx:                  <strong>{activeSession.sessionId}</strong>
+apps/web/src/components/spawn/SpawnWizard.tsx:                  <strong>{activeSession.retryable ? "Available" : "Not available"}</strong>
+apps/web/src/components/spawn/SpawnWizard.tsx:                  <strong>{activeSession.refundable ? "Available" : "Not available"}</strong>
+apps/web/src/components/spawn/SpawnWizard.tsx:                  disabled={!activeSession.retryable || spawnSession.isMutating}
+apps/web/src/components/spawn/SpawnWizard.tsx:                    void spawnSession.retry();
+apps/web/src/components/spawn/SpawnWizard.tsx:                  disabled={!activeSession.refundable || spawnSession.isMutating}
+apps/web/src/components/spawn/SpawnWizard.tsx:                    void spawnSession.refund();
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:  onOpenRouterApiKeyChange: (value: string) => void;
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:  onBraveSearchApiKeyChange: (value: string) => void;
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:  onOpenRouterApiKeyChange,
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:  onBraveSearchApiKeyChange
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:        OpenRouter and Brave are optional. Leave either field blank to keep that
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:          <span className="spawn-field-label">OpenRouter API key</span>
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:              onOpenRouterApiKeyChange(event.currentTarget.value);
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:            ? "Loading live OpenRouter models."
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:          <span className="spawn-field-label">Brave Search API key</span>
+apps/web/src/components/spawn/steps/ProviderConfigStep.tsx:              onBraveSearchApiKeyChange(event.currentTarget.value);
+apps/web/src/components/spawn/steps/FundStep.tsx:              <span>Brave Search</span>
+==> npm run lint
+
+> ic-automaton-launchpad@0.1.0 lint
+> npm run lint --workspace @ic-automaton/shared && npm run lint --workspace @ic-automaton/indexer && npm run lint --workspace @ic-automaton/web && npm run lint:factory
+
+
+> @ic-automaton/shared@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/indexer@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/web@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s
+==> npm run build
+
+> ic-automaton-launchpad@0.1.0 build
+> npm run build --workspace @ic-automaton/shared && npm run build --workspace @ic-automaton/indexer && npm run build --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/indexer@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/web@0.1.0 build
+> tsc -p tsconfig.json --noEmit && vite build
+
+vite v7.3.1 building client environment for production...
+transforming...
+✓ 52 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.40 kB │ gzip:  0.26 kB
+dist/assets/index-BlwHsbGm.css   21.09 kB │ gzip:  4.63 kB
+dist/assets/index-BuHaUVtc.js   199.73 kB │ gzip: 63.39 kB
+✓ built in 490ms
+==> npm run test
+
+> ic-automaton-launchpad@0.1.0 test
+> npm run test --workspace @ic-automaton/shared && npm run test --workspace @ic-automaton/indexer && npm run test --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared[39m
+
+ [32m✓[39m test/contracts.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m   Start at [22m 15:58:40
+[2m   Duration [22m 132ms[2m (transform 37ms, setup 0ms, import 47ms, tests 3ms, environment 0ms)[22m
+
+
+> @ic-automaton/indexer@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer[39m
+
+ [32m✓[39m test/realtime.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/sqlite.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m test/server.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 100[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[32m10 passed[39m[22m[90m (10)[39m
+[2m   Start at [22m 15:58:41
+[2m   Duration [22m 406ms[2m (transform 219ms, setup 0ms, import 384ms, tests 128ms, environment 0ms)[22m
+
+
+> @ic-automaton/web@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/web[39m
+
+ [32m✓[39m src/lib/cli-commands/provider-config.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m src/components/spawn/spawn-state.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/hooks/useSpawnSession.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m src/App.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m [1m[32m7 passed[39m[22m[90m (7)[39m
+[2m   Start at [22m 15:58:41
+[2m   Duration [22m 327ms[2m (transform 314ms, setup 0ms, import 435ms, tests 45ms, environment 1ms)[22m
+
+==> npm run lint:factory
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+==> npm run test:factory
+
+> ic-automaton-launchpad@0.1.0 test:factory
+> cargo test -p factory
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/factory-bdda94b641d2f6fb)
+
+running 11 tests
+test tests::exposes_bootstrap_identity ... ok
+test tests::rejects_session_creation_while_paused ... ok
+test tests::paginates_registry_reads ... ok
+test tests::keeps_underfunded_claims_awaiting_payment ... ok
+test tests::expires_underfunded_sessions_and_allows_refund ... ok
+test tests::expires_failed_paid_sessions_and_disables_retry_after_deadline ... ok
+test tests::creates_sessions_with_fixed_quote_terms_and_audit_log ... ok
+test tests::executes_spawn_after_paid_claim_and_hands_off_controller ... ok
+test tests::retries_paid_failed_sessions_for_steward_and_admin ... ok
+test tests::snapshots_and_restores_upgrade_safe_state ... ok
+test tests::updates_admin_quote_configuration ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests factory
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

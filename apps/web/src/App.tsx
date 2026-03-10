@@ -1,0 +1,207 @@
+import { useEffect, useState, type CSSProperties } from "react";
+
+import { AutomatonDrawer } from "./components/drawer/AutomatonDrawer";
+import { AutomatonCanvas } from "./components/grid/AutomatonCanvas";
+import { SpawnWizard } from "./components/spawn/SpawnWizard";
+import { useAutomatonDetail } from "./hooks/useAutomatonDetail";
+import { useAutomatons } from "./hooks/useAutomatons";
+import { themeTokens } from "./theme/tokens";
+
+const navigationItems = ["Spawn", "Strategies", "Skills"] as const;
+
+type ThemeStyle = CSSProperties & Record<`--${string}`, string>;
+
+function truncateAddress(value: string): string {
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+export default function App() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [scope, setScope] = useState<"all" | "mine">("all");
+  const [selectedCanisterId, setSelectedCanisterId] = useState<string | null>(
+    null
+  );
+  const [spawnWizardOpen, setSpawnWizardOpen] = useState(false);
+  const [viewerAddress] = useState<string | null>(null);
+  const {
+    automatons: visibleAutomatons,
+    error: automatonFeedError,
+    isLoading: automatonsLoading,
+    refresh: refreshAutomatons,
+    total: liveCount
+  } = useAutomatons({
+    scope,
+    viewerAddress
+  });
+  const {
+    automaton: selectedAutomaton,
+    error: selectedAutomatonError,
+    isLoading: selectedAutomatonLoading
+  } = useAutomatonDetail(selectedCanisterId);
+  const walletDetected = viewerAddress !== null;
+  const walletLabel = walletDetected
+    ? `Wallet detected ${truncateAddress(viewerAddress)}`
+    : "Wallet not detected";
+  const walletClassName = `wallet-button${walletDetected ? " is-connected" : ""}`;
+  const stageNotice =
+    automatonFeedError !== null
+      ? `Indexer unavailable: ${automatonFeedError}`
+      : automatonsLoading && visibleAutomatons.length === 0
+        ? "Loading indexed automatons."
+        : visibleAutomatons.length === 0
+          ? "No automaton is indexed yet. Configure the indexer with a canister ID to populate this grid."
+          : null;
+
+  useEffect(() => {
+    if (
+      selectedCanisterId !== null &&
+      !visibleAutomatons.some((entry) => entry.canisterId === selectedCanisterId)
+    ) {
+      setSelectedCanisterId(null);
+    }
+  }, [selectedCanisterId, visibleAutomatons]);
+
+  useEffect(() => {
+    if (selectedCanisterId === null) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedCanisterId(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedCanisterId]);
+
+  useEffect(() => {
+    if (!walletDetected && scope === "mine") {
+      setScope("all");
+    }
+  }, [walletDetected, scope]);
+
+  const themeStyle: ThemeStyle = {
+    "--color-bg": themeTokens.colors.background,
+    "--color-panel": themeTokens.colors.panel,
+    "--color-panel-strong": themeTokens.colors.panelStrong,
+    "--color-ink": themeTokens.colors.ink,
+    "--color-line": themeTokens.colors.line,
+    "--color-accent": themeTokens.colors.accent,
+    "--color-accent-soft": themeTokens.colors.accentSoft,
+    "--color-muted": themeTokens.colors.muted,
+    "--color-muted-strong": themeTokens.colors.mutedStrong,
+    "--color-inverse": themeTokens.colors.inverse,
+    "--color-drawer-bg": themeTokens.colors.drawerBackground,
+    "--color-drawer-text": themeTokens.colors.drawerText,
+    "--color-drawer-muted": themeTokens.colors.drawerMuted,
+    "--color-drawer-subtle": themeTokens.colors.drawerSubtle,
+    "--color-tier-normal": themeTokens.colors.tierNormal,
+    "--color-tier-low": themeTokens.colors.tierLow,
+    "--color-tier-critical": themeTokens.colors.tierCritical,
+    "--font-display": themeTokens.typography.display,
+    "--font-body": themeTokens.typography.body,
+    "--space-2xs": themeTokens.spacing["2xs"],
+    "--space-xs": themeTokens.spacing.xs,
+    "--space-sm": themeTokens.spacing.sm,
+    "--space-md": themeTokens.spacing.md,
+    "--space-lg": themeTokens.spacing.lg,
+    "--space-xl": themeTokens.spacing.xl,
+    "--space-2xl": themeTokens.spacing["2xl"],
+    "--border-strong": themeTokens.borderWidths.strong,
+    "--border-hairline": themeTokens.borderWidths.hairline,
+    "--duration-fast": themeTokens.motion.fast,
+    "--duration-base": themeTokens.motion.base
+  };
+
+  return (
+    <div className="app-shell" style={themeStyle}>
+      <header className="site-header">
+        <div className="brand-lockup">
+          <h1 className="brand-wordmark">ic-automaton</h1>
+          <p className="brand-tagline">Self-sovereign AI agents on-chain</p>
+        </div>
+
+        <button
+          aria-controls="primary-navigation"
+          aria-expanded={menuOpen}
+          className="menu-toggle"
+          onClick={() => {
+            setMenuOpen((open) => !open);
+          }}
+          type="button"
+        >
+          MENU
+        </button>
+
+        <div
+          className={`header-actions${menuOpen ? " is-open" : ""}`}
+          id="primary-navigation"
+        >
+          <nav aria-label="Primary" className="nav-cluster">
+            {navigationItems.map((item) => (
+              <button
+                className="nav-button"
+                key={item}
+                onClick={() => {
+                  if (item === "Spawn") {
+                    setSpawnWizardOpen(true);
+                  }
+                }}
+                type="button"
+              >
+                {item}
+              </button>
+            ))}
+          </nav>
+
+          <div className="header-utility">
+            <span className="live-pill">{liveCount} LIVE</span>
+            <button className={walletClassName} type="button">
+              {walletLabel}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="shell-main">
+        <AutomatonCanvas
+          automatons={visibleAutomatons}
+          onSelect={(canisterId) => {
+            setSelectedCanisterId(canisterId);
+          }}
+          selectedCanisterId={selectedCanisterId}
+          statusNotice={stageNotice}
+          viewerAddress={viewerAddress}
+        />
+      </main>
+
+      <AutomatonDrawer
+        automaton={selectedAutomaton}
+        errorMessage={selectedAutomatonError}
+        isLoading={selectedAutomatonLoading}
+        isOpen={selectedCanisterId !== null}
+        onClose={() => {
+          setSelectedCanisterId(null);
+        }}
+        selectedCanisterId={selectedCanisterId}
+        viewerAddress={viewerAddress}
+      />
+
+      <SpawnWizard
+        isOpen={spawnWizardOpen}
+        onClose={() => {
+          setSpawnWizardOpen(false);
+        }}
+        onSpawned={() => {
+          refreshAutomatons();
+        }}
+        viewerAddress={viewerAddress}
+      />
+    </div>
+  );
+}

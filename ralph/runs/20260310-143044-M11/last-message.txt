@@ -1,0 +1,7 @@
+COMPLETED
+
+Key files changed: [App.tsx](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/App.tsx), [SpawnWizard.tsx](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/components/spawn/SpawnWizard.tsx), [useSpawnSession.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/hooks/useSpawnSession.ts), [provider-config.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/lib/cli-commands/provider-config.ts), and [spawn-sessions.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/routes/spawn-sessions.ts). The web app now reads automaton/session state from the indexer, tracks payment progress with retry/refund actions, and exposes steward-only OpenRouter/Brave/model CLI commands.
+
+Validation summary: `test -f apps/web/src/api/spawn.ts`, `test -f apps/web/src/hooks/useSpawnSession.ts`, `test -f apps/web/src/lib/cli-commands/provider-config.ts`, `rg "sessionId|retry|refund|OpenRouter|Brave" apps/web/src`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory` all passed.
+
+Blocker for the next loop: none for this milestone. The remaining deployment constraint is documented in [M11.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M11.md) and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md): live create/retry/refund still need a concrete factory transport behind the indexer’s default unconfigured adapter.

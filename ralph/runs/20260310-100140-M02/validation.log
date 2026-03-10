@@ -1,0 +1,6 @@
+==> test -f packages/shared/src/spawn.ts
+==> test -f packages/shared/src/automaton.ts
+==> test -f packages/shared/src/events.ts
+==> test -f packages/shared/src/catalog.ts
+==> rg "SpawnSession|SpawnSessionState|quoteTermsHash" packages/shared/src/spawn.ts
+./scripts/ralph-loop.sh: line 48: rg: command not found

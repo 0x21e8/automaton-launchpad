@@ -1,0 +1,286 @@
+import type {
+  AutomatonDetail,
+  MonologueEntry,
+  SkillSelection,
+  StrategySelection
+} from "@ic-automaton/shared";
+
+import type {
+  HttpTurnRecordResponse,
+  IdentityConfigRead,
+  RuntimeFinancialRead
+} from "../integrations/automaton-client.js";
+import type { IndexerTargetConfig } from "../indexer.config.js";
+import {
+  buildCanisterUrl,
+  buildExplorerUrl,
+  computeCorePattern,
+  computeGridPosition,
+  computeNetWorth,
+  deriveAutomatonName,
+  nsToMs,
+  toChainSlug,
+  toOptionalInteger,
+  toOptionalNumber,
+  toOptionalString,
+  toVariantName
+} from "../lib/automaton-derived.js";
+
+export function normalizeMonologueEntries(turns: HttpTurnRecordResponse[]): MonologueEntry[] {
+  return turns
+    .map((turn) => {
+      const timestamp = nsToMs(turn.created_at_ns);
+      const turnId = toOptionalString(turn.id);
+
+      if (timestamp === null || turnId === null) {
+        return null;
+      }
+
+      const toolCallCount = toOptionalInteger(turn.tool_call_count) ?? 0;
+      const message =
+        toOptionalString(turn.inner_dialogue) ??
+        toOptionalString(turn.input_summary) ??
+        "No monologue captured.";
+
+      return {
+        timestamp,
+        turnId,
+        type: toolCallCount > 0 ? "action" : "thought",
+        message,
+        agentState: `${toVariantName(turn.state_from, "Unknown")} -> ${toVariantName(turn.state_to, "Unknown")}`,
+        toolCallCount,
+        durationMs: toOptionalInteger(turn.duration_ms),
+        error: toOptionalString(turn.error)
+      } satisfies MonologueEntry;
+    })
+    .filter((entry): entry is MonologueEntry => entry !== null)
+    .sort((left, right) => {
+      if (left.timestamp === right.timestamp) {
+        return right.turnId.localeCompare(left.turnId);
+      }
+
+      return right.timestamp - left.timestamp;
+    });
+}
+
+function normalizeStrategies(identity: IdentityConfigRead | undefined): StrategySelection[] {
+  if (!identity) {
+    return [];
+  }
+
+  return identity.strategies.map((strategy) => ({
+    key: {
+      protocol: strategy.key.protocol,
+      primitive: strategy.key.primitive,
+      templateId: strategy.key.template_id,
+      chainId: Number(strategy.key.chain_id)
+    },
+    status: toVariantName(strategy.status, "draft").toLowerCase()
+  }));
+}
+
+function normalizeSkills(identity: IdentityConfigRead | undefined): SkillSelection[] {
+  if (!identity) {
+    return [];
+  }
+
+  return identity.skills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    enabled: skill.enabled
+  }));
+}
+
+function normalizeTier(
+  survivalTier: unknown,
+  fallback: AutomatonDetail["tier"]
+): AutomatonDetail["tier"] {
+  if (survivalTier === undefined) {
+    return fallback;
+  }
+
+  const tierVariant = toVariantName(survivalTier, fallback);
+
+  if (tierVariant === "LowCycles" || tierVariant === "low") {
+    return "low";
+  }
+
+  if (tierVariant === "Critical" || tierVariant === "critical") {
+    return "critical";
+  }
+
+  if (tierVariant === "OutOfCycles" || tierVariant === "out_of_cycles") {
+    return "out_of_cycles";
+  }
+
+  return "normal";
+}
+
+function defaultDetail(canisterId: string, config: IndexerTargetConfig, now: number): AutomatonDetail {
+  const { corePatternIndex, corePattern } = computeCorePattern(canisterId);
+
+  return {
+    canisterId,
+    ethAddress: null,
+    chain: "base",
+    chainId: 8453,
+    name: deriveAutomatonName(canisterId),
+    tier: "normal",
+    agentState: "Unknown",
+    ethBalanceWei: null,
+    usdcBalanceRaw: null,
+    cyclesBalance: 0,
+    netWorthEth: null,
+    netWorthUsd: null,
+    heartbeatIntervalSeconds: null,
+    steward: {
+      address: "0x0000000000000000000000000000000000000000",
+      chainId: 8453,
+      ensName: null,
+      enabled: false
+    },
+    gridPosition: computeGridPosition(canisterId),
+    corePatternIndex,
+    corePattern,
+    parentId: null,
+    createdAt: now,
+    lastTransitionAt: now,
+    soul: "",
+    canisterUrl: buildCanisterUrl(config, canisterId),
+    explorerUrl: null,
+    financials: {
+      ethBalanceWei: null,
+      usdcBalanceRaw: null,
+      cyclesBalance: 0,
+      liquidCycles: 0,
+      burnRatePerDay: null,
+      estimatedFreezeTime: null,
+      netWorthEth: null,
+      netWorthUsd: null
+    },
+    runtime: {
+      agentState: "Unknown",
+      loopEnabled: false,
+      lastTransitionAt: now,
+      lastError: null,
+      heartbeatIntervalSeconds: null
+    },
+    version: {
+      commitHash: "unknown",
+      shortCommitHash: "unknown"
+    },
+    strategies: [],
+    skills: [],
+    promptLayers: [],
+    monologue: [],
+    childIds: [],
+    lastPolledAt: now
+  };
+}
+
+export function normalizeAutomatonDetail(options: {
+  canisterId: string;
+  config: IndexerTargetConfig;
+  existingDetail?: AutomatonDetail | null;
+  identity?: IdentityConfigRead;
+  monologue?: MonologueEntry[];
+  now: number;
+  runtime?: RuntimeFinancialRead;
+  ethUsd: number | null;
+}): AutomatonDetail {
+  const base =
+    options.existingDetail ?? defaultDetail(options.canisterId, options.config, options.now);
+  const identity = options.identity;
+  const runtime = options.runtime;
+  const chainId = toOptionalInteger(identity?.evmConfig.chain_id) ?? base.chainId;
+  const automatonAddress =
+    toOptionalString(identity?.evmConfig.automaton_address) ?? base.ethAddress;
+  const walletEthBalance = toOptionalString(runtime?.walletBalance.eth_balance_wei_hex) ?? base.financials.ethBalanceWei;
+  const walletUsdcBalance =
+    toOptionalString(runtime?.walletBalance.usdc_balance_raw_hex) ?? base.financials.usdcBalanceRaw;
+  const usdcDecimals = toOptionalInteger(runtime?.walletBalance.usdc_decimals) ?? 6;
+  const netWorth = computeNetWorth(walletEthBalance, walletUsdcBalance, usdcDecimals, options.ethUsd);
+  const transitionAt =
+    nsToMs(runtime?.snapshot.runtime?.last_transition_at_ns) ??
+    base.runtime.lastTransitionAt;
+  const heartbeatIntervalSeconds =
+    toOptionalInteger(identity?.schedulerConfig.default_turn_interval_secs) ??
+    base.runtime.heartbeatIntervalSeconds;
+  const runtimeState = toVariantName(runtime?.snapshot.runtime?.state, base.runtime.agentState);
+  const commitHash = toOptionalString(identity?.buildInfo.commit) ?? base.version.commitHash;
+
+  return {
+    ...base,
+    canisterId: options.canisterId,
+    ethAddress: automatonAddress,
+    chainId,
+    chain: toChainSlug(chainId),
+    name: deriveAutomatonName(options.canisterId),
+    tier: normalizeTier(runtime?.snapshot.scheduler?.survival_tier, base.tier),
+    agentState: runtimeState,
+    ethBalanceWei: walletEthBalance,
+    usdcBalanceRaw: walletUsdcBalance,
+    cyclesBalance:
+      toOptionalNumber(runtime?.snapshot.cycles?.total_cycles) ?? base.financials.cyclesBalance,
+    netWorthEth: netWorth.netWorthEth,
+    netWorthUsd: netWorth.netWorthUsd,
+    heartbeatIntervalSeconds,
+    steward:
+      identity?.stewardStatus.active_steward
+        ? {
+            address:
+              toOptionalString(identity.stewardStatus.active_steward.address) ??
+              base.steward.address,
+            chainId:
+              toOptionalInteger(identity.stewardStatus.active_steward.chain_id) ??
+              base.steward.chainId,
+            ensName: base.steward.ensName,
+            enabled: Boolean(identity.stewardStatus.active_steward.enabled)
+          }
+        : base.steward,
+    gridPosition: computeGridPosition(options.canisterId),
+    ...computeCorePattern(options.canisterId),
+    lastTransitionAt: transitionAt,
+    soul:
+      toOptionalString(runtime?.snapshot.runtime?.soul) ??
+      base.soul,
+    canisterUrl: buildCanisterUrl(options.config, options.canisterId),
+    explorerUrl: buildExplorerUrl(chainId, automatonAddress),
+    financials: {
+      ethBalanceWei: walletEthBalance,
+      usdcBalanceRaw: walletUsdcBalance,
+      cyclesBalance:
+        toOptionalNumber(runtime?.snapshot.cycles?.total_cycles) ?? base.financials.cyclesBalance,
+      liquidCycles:
+        toOptionalNumber(runtime?.snapshot.cycles?.liquid_cycles) ?? base.financials.liquidCycles,
+      burnRatePerDay:
+        toOptionalNumber(runtime?.snapshot.cycles?.burn_rate_cycles_per_day) ??
+        base.financials.burnRatePerDay,
+      estimatedFreezeTime:
+        nsToMs(runtime?.snapshot.cycles?.estimated_freeze_time_ns) ??
+        base.financials.estimatedFreezeTime,
+      netWorthEth: netWorth.netWorthEth,
+      netWorthUsd: netWorth.netWorthUsd
+    },
+    runtime: {
+      agentState: runtimeState,
+      loopEnabled: runtime?.snapshot.runtime?.loop_enabled ?? base.runtime.loopEnabled,
+      lastTransitionAt: transitionAt,
+      lastError:
+        toOptionalString(runtime?.snapshot.runtime?.last_error) ??
+        base.runtime.lastError,
+      heartbeatIntervalSeconds
+    },
+    version: {
+      commitHash,
+      shortCommitHash: commitHash.slice(0, 7)
+    },
+    strategies: identity ? normalizeStrategies(identity) : base.strategies,
+    skills: identity ? normalizeSkills(identity) : base.skills,
+    promptLayers:
+      identity?.promptLayers.map((layer) => layer.content) ??
+      base.promptLayers,
+    monologue: options.monologue ?? base.monologue,
+    lastPolledAt: options.now
+  };
+}

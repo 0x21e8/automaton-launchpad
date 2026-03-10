@@ -1,0 +1,37 @@
+{
+  "name": "ic-automaton-launchpad",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "sh ./scripts/dev.sh",
+    "dev:web": "npm run dev --workspace @ic-automaton/web",
+    "dev:indexer": "npm run dev --workspace @ic-automaton/indexer",
+    "lint": "npm run lint --workspace @ic-automaton/shared && npm run lint --workspace @ic-automaton/indexer && npm run lint --workspace @ic-automaton/web && npm run lint:factory",
+    "lint:factory": "cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings",
+    "build": "npm run build --workspace @ic-automaton/shared && npm run build --workspace @ic-automaton/indexer && npm run build --workspace @ic-automaton/web",
+    "test": "npm run test --workspace @ic-automaton/shared && npm run test --workspace @ic-automaton/indexer && npm run test --workspace @ic-automaton/web",
+    "test:factory": "cargo test -p factory"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.2",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "fastify": "5.8.2"
+  }
+}

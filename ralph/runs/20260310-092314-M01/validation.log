@@ -1,0 +1,11 @@
+==> test -f package.json
+==> test -f Cargo.toml
+==> test -f apps/web/package.json
+==> test -f apps/indexer/package.json
+==> test -f backend/factory/Cargo.toml
+==> npm install
+npm ERR! code EUNSUPPORTEDPROTOCOL
+npm ERR! Unsupported URL Type "workspace:": workspace:*
+
+npm ERR! A complete log of this run can be found in:
+npm ERR!     /Users/domwoe/.npm/_logs/2026-03-10T08_33_39_629Z-debug-0.log

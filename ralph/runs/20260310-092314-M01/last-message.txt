@@ -1,0 +1,7 @@
+BLOCKED
+
+Implemented the `M01` scaffold in [package.json](/Users/domwoe/Dev/projects/automaton-launchpad/package.json), [packages/shared/src/index.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/src/index.ts), [apps/web/src/App.tsx](/Users/domwoe/Dev/projects/automaton-launchpad/apps/web/src/App.tsx), [apps/indexer/src/server.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/server.ts), [backend/factory/src/lib.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/lib.rs), and recorded the milestone state in [ralph/reports/M01.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M01.md) plus [ralph/notes/rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
+
+Validation summary: all required file-presence checks passed, `cargo fmt --check` passed, and `cargo test --workspace` passed. `npm install` never completed in this sandbox and did not create `node_modules`; because of that, `npm run lint` and `npm run build` failed with `sh: tsc: command not found`, and `npm run test` failed with `sh: vitest: command not found`.
+
+Blocker for the next loop iteration: resolve the environment issue preventing `npm install` from finishing before starting `M02`.

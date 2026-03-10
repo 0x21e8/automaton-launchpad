@@ -1,0 +1,327 @@
+import type {
+  AutomatonDetail,
+  MonologueEntry,
+  RealtimeEvent
+} from "@ic-automaton/shared";
+
+import type { IndexerConfig } from "../config.js";
+import type { AutomatonClient } from "../integrations/automaton-client.js";
+import { diffAutomatonRecord } from "../lib/automaton-record.js";
+import { normalizeAutomatonDetail, normalizeMonologueEntries } from "../normalize/automaton.js";
+import type { IndexerStore } from "../store/sqlite.js";
+
+export interface EthUsdPriceSourceSnapshot {
+  ethUsd: number | null;
+  label: string;
+  source: "fixed";
+  updatedAt: number;
+}
+
+export interface EthUsdPriceSource {
+  read(): Promise<EthUsdPriceSourceSnapshot>;
+}
+
+export class FixedEthUsdPriceSource implements EthUsdPriceSource {
+  constructor(private readonly ethUsd = 2_500) {}
+
+  async read(): Promise<EthUsdPriceSourceSnapshot> {
+    return {
+      ethUsd: this.ethUsd,
+      source: "fixed",
+      label: `fixed:${this.ethUsd}`,
+      updatedAt: Date.now()
+    };
+  }
+}
+
+export interface PollRunSnapshot {
+  failureCount: number;
+  inFlight: boolean;
+  lastAttemptAt: number | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastSuccessAt: number | null;
+  successCount: number;
+}
+
+export interface CanisterPollSnapshot {
+  currentDetailAvailable: boolean;
+  identity: PollRunSnapshot;
+  lastIndexedMonologueCount: number;
+  lastObservedTurnId: string | null;
+  lastPersistedAt: number | null;
+  monologue: PollRunSnapshot;
+  runtime: PollRunSnapshot;
+}
+
+export interface AutomatonIndexerSnapshot {
+  canisters: Record<string, CanisterPollSnapshot>;
+  enabled: boolean;
+  price: EthUsdPriceSourceSnapshot | null;
+  startedAt: number | null;
+}
+
+function createPollRunSnapshot(): PollRunSnapshot {
+  return {
+    inFlight: false,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastDurationMs: null,
+    lastError: null,
+    successCount: 0,
+    failureCount: 0
+  };
+}
+
+function createCanisterPollSnapshot(): CanisterPollSnapshot {
+  return {
+    identity: createPollRunSnapshot(),
+    runtime: createPollRunSnapshot(),
+    monologue: createPollRunSnapshot(),
+    lastPersistedAt: null,
+    lastIndexedMonologueCount: 0,
+    lastObservedTurnId: null,
+    currentDetailAvailable: false
+  };
+}
+
+export interface AutomatonIndexerOptions {
+  client: AutomatonClient;
+  config: IndexerConfig;
+  eventPublisher?: RealtimeEventPublisher;
+  priceSource?: EthUsdPriceSource;
+  store: IndexerStore;
+}
+
+export interface RealtimeEventPublisher {
+  broadcast(event: RealtimeEvent): void;
+}
+
+export class AutomatonIndexer {
+  private readonly client: AutomatonClient;
+  private readonly config: IndexerConfig;
+  private eventPublisher?: RealtimeEventPublisher;
+  private readonly priceSource: EthUsdPriceSource;
+  private readonly store: IndexerStore;
+
+  private readonly snapshot: AutomatonIndexerSnapshot = {
+    startedAt: null,
+    enabled: false,
+    price: null,
+    canisters: {}
+  };
+
+  private readonly timers = new Set<NodeJS.Timeout>();
+
+  constructor(options: AutomatonIndexerOptions) {
+    this.client = options.client;
+    this.config = options.config;
+    this.store = options.store;
+    this.priceSource = options.priceSource ?? new FixedEthUsdPriceSource();
+    this.eventPublisher = options.eventPublisher;
+  }
+
+  setEventPublisher(eventPublisher: RealtimeEventPublisher | undefined) {
+    this.eventPublisher = eventPublisher;
+  }
+
+  start() {
+    if (this.snapshot.enabled) {
+      return;
+    }
+
+    this.snapshot.enabled = true;
+    this.snapshot.startedAt = Date.now();
+    void this.refreshPriceNow().catch(() => undefined);
+    this.schedule(this.config.slowPollIntervalMs, () => this.pollIdentityNow());
+    this.schedule(this.config.fastPollIntervalMs, () => this.pollRuntimeNow());
+    this.schedule(this.config.fastPollIntervalMs, () => this.pollMonologueNow());
+    this.schedule(this.config.pricePollIntervalMs, () => this.refreshPriceNow());
+  }
+
+  async stop() {
+    this.snapshot.enabled = false;
+
+    for (const timer of this.timers) {
+      clearInterval(timer);
+    }
+
+    this.timers.clear();
+  }
+
+  getSnapshot(): AutomatonIndexerSnapshot {
+    return {
+      startedAt: this.snapshot.startedAt,
+      enabled: this.snapshot.enabled,
+      price: this.snapshot.price ? { ...this.snapshot.price } : null,
+      canisters: Object.fromEntries(
+        Object.entries(this.snapshot.canisters).map(([canisterId, entry]) => [
+          canisterId,
+          {
+            ...entry,
+            identity: { ...entry.identity },
+            runtime: { ...entry.runtime },
+            monologue: { ...entry.monologue }
+          }
+        ])
+      )
+    };
+  }
+
+  async refreshPriceNow() {
+    const price = await this.priceSource.read();
+    this.snapshot.price = price;
+    await this.store.setPrice("ethUsd", price.ethUsd);
+  }
+
+  async pollIdentityNow() {
+    for (const canisterId of this.config.ingestion.canisterIds) {
+      await this.runPoll(canisterId, "identity", async () => {
+        const existingDetail = await this.store.getAutomatonDetail(canisterId);
+        const identity = await this.client.readIdentityConfig(canisterId);
+        const detail = normalizeAutomatonDetail({
+          canisterId,
+          config: this.config.ingestion,
+          existingDetail,
+          identity,
+          now: Date.now(),
+          ethUsd: this.snapshot.price?.ethUsd ?? null
+        });
+
+        await this.persistDetail(canisterId, existingDetail, detail);
+      });
+    }
+  }
+
+  async pollRuntimeNow() {
+    for (const canisterId of this.config.ingestion.canisterIds) {
+      await this.runPoll(canisterId, "runtime", async () => {
+        const existingDetail = await this.store.getAutomatonDetail(canisterId);
+        const runtime = await this.client.readRuntimeFinancial(canisterId);
+        const detail = normalizeAutomatonDetail({
+          canisterId,
+          config: this.config.ingestion,
+          existingDetail,
+          now: Date.now(),
+          runtime,
+          ethUsd: this.snapshot.price?.ethUsd ?? null
+        });
+
+        await this.persistDetail(canisterId, existingDetail, detail);
+      });
+    }
+  }
+
+  async pollMonologueNow() {
+    for (const canisterId of this.config.ingestion.canisterIds) {
+      await this.runPoll(canisterId, "monologue", async () => {
+        const turns = await this.client.readRecentTurns(canisterId);
+        const entries = normalizeMonologueEntries(turns.recentTurns);
+        const existingEntries = await this.store.listMonologue(canisterId, {
+          limit: Math.max(entries.length * 4, 50)
+        });
+        const existingKeys = new Set(
+          existingEntries.entries.map((entry) => this.createMonologueKey(entry))
+        );
+        const newEntries = entries.filter((entry) => {
+          return !existingKeys.has(this.createMonologueKey(entry));
+        });
+
+        await this.store.appendMonologue(canisterId, entries);
+
+        const page = await this.store.listMonologue(canisterId, {
+          limit: 50
+        });
+        const canisterSnapshot = this.ensureCanisterSnapshot(canisterId);
+        canisterSnapshot.lastIndexedMonologueCount = page.entries.length;
+        canisterSnapshot.lastObservedTurnId = page.entries[0]?.turnId ?? null;
+
+        for (const entry of newEntries.sort((left, right) => {
+          if (left.timestamp === right.timestamp) {
+            return left.turnId.localeCompare(right.turnId);
+          }
+
+          return left.timestamp - right.timestamp;
+        })) {
+          this.eventPublisher?.broadcast({
+            type: "monologue",
+            canisterId,
+            entry
+          });
+        }
+      });
+    }
+  }
+
+  private async persistDetail(
+    canisterId: string,
+    previousDetail: AutomatonDetail | null | undefined,
+    detail: AutomatonDetail
+  ) {
+    const changes = diffAutomatonRecord(previousDetail, detail);
+    await this.store.upsertAutomaton(detail);
+
+    const canisterSnapshot = this.ensureCanisterSnapshot(canisterId);
+    canisterSnapshot.currentDetailAvailable = true;
+    canisterSnapshot.lastPersistedAt = Date.now();
+
+    if (changes) {
+      this.eventPublisher?.broadcast({
+        type: "update",
+        canisterId,
+        changes,
+        timestamp: detail.lastPolledAt
+      });
+    }
+  }
+
+  private schedule(intervalMs: number, callback: () => Promise<void>) {
+    const run = () => {
+      void callback().catch(() => undefined);
+    };
+
+    run();
+    const timer = setInterval(run, intervalMs);
+    this.timers.add(timer);
+  }
+
+  private ensureCanisterSnapshot(canisterId: string) {
+    this.snapshot.canisters[canisterId] ??= createCanisterPollSnapshot();
+    return this.snapshot.canisters[canisterId];
+  }
+
+  private createMonologueKey(entry: MonologueEntry) {
+    return `${entry.timestamp}:${entry.turnId}`;
+  }
+
+  private async runPoll(
+    canisterId: string,
+    phase: "identity" | "runtime" | "monologue",
+    operation: () => Promise<void>
+  ) {
+    const canisterSnapshot = this.ensureCanisterSnapshot(canisterId);
+    const phaseSnapshot = canisterSnapshot[phase];
+
+    if (phaseSnapshot.inFlight) {
+      return;
+    }
+
+    phaseSnapshot.inFlight = true;
+    phaseSnapshot.lastAttemptAt = Date.now();
+    const startedAt = Date.now();
+
+    try {
+      await operation();
+      phaseSnapshot.lastSuccessAt = Date.now();
+      phaseSnapshot.lastError = null;
+      phaseSnapshot.successCount += 1;
+      phaseSnapshot.lastDurationMs = Date.now() - startedAt;
+    } catch (error) {
+      phaseSnapshot.lastError = error instanceof Error ? error.message : String(error);
+      phaseSnapshot.failureCount += 1;
+      phaseSnapshot.lastDurationMs = Date.now() - startedAt;
+    } finally {
+      phaseSnapshot.inFlight = false;
+    }
+  }
+}

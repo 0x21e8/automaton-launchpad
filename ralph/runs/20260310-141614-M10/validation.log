@@ -1,0 +1,207 @@
+==> test -f apps/indexer/src/routes/spawn-sessions.ts
+==> test -f apps/indexer/src/integrations/factory-client.ts
+==> test -f apps/indexer/src/integrations/escrow-client.ts
+==> rg "spawn-session|sessionId|factory|escrow" apps/indexer/src
+apps/indexer/src/store/sqlite.ts:  getSpawnSessionDetail(sessionId: string): Promise<SpawnSessionDetail | null>;
+apps/indexer/src/store/sqlite.ts:  async getSpawnSessionDetail(sessionId: string) {
+apps/indexer/src/store/sqlite.ts:        escrow_json: string | null;
+apps/indexer/src/store/sqlite.ts:        `SELECT session_json, audit_json, escrow_json, registry_json
+apps/indexer/src/store/sqlite.ts:      .get(sessionId);
+apps/indexer/src/store/sqlite.ts:      escrow:
+apps/indexer/src/store/sqlite.ts:        row.escrow_json === null
+apps/indexer/src/store/sqlite.ts:          : (JSON.parse(row.escrow_json) as SpawnSessionDetail["escrow"]),
+apps/indexer/src/store/sqlite.ts:          escrow_json,
+apps/indexer/src/store/sqlite.ts:          escrow_json = excluded.escrow_json,
+apps/indexer/src/store/sqlite.ts:        detail.session.sessionId,
+apps/indexer/src/store/sqlite.ts:        detail.escrow ? JSON.stringify(detail.escrow) : null,
+apps/indexer/src/store/sqlite.ts:          record.sessionId,
+apps/indexer/src/server.ts:import { EscrowClient } from "./integrations/escrow-client.js";
+apps/indexer/src/server.ts:import { FactoryClient } from "./integrations/factory-client.js";
+apps/indexer/src/server.ts:import { spawnSessionRoutes } from "./routes/spawn-sessions.js";
+apps/indexer/src/server.ts:  escrowClient?: EscrowClient;
+apps/indexer/src/server.ts:  factoryClient?: FactoryClient;
+apps/indexer/src/server.ts:  const factoryClient = options.factoryClient ?? new FactoryClient();
+apps/indexer/src/server.ts:  const escrowClient = options.escrowClient ?? new EscrowClient();
+apps/indexer/src/server.ts:  app.decorate("escrowClient", escrowClient);
+apps/indexer/src/server.ts:  app.decorate("factoryClient", factoryClient);
+apps/indexer/src/store/schema.sql:  escrow_json TEXT,
+apps/indexer/src/config.ts:  factoryCanisterId?: string;
+apps/indexer/src/config.ts:  factoryCanisterId?: string;
+apps/indexer/src/config.ts:    factoryCanisterId:
+apps/indexer/src/config.ts:      overrides.factoryCanisterId ?? env.INDEXER_FACTORY_CANISTER_ID ?? undefined,
+apps/indexer/src/ws/events.ts:  sessionId?: string;
+apps/indexer/src/ws/events.ts:      return [event.session.sessionId];
+apps/indexer/src/ws/events.ts:    normalizedFilter.sessionId &&
+apps/indexer/src/ws/events.ts:    !extractEventSessionIds(event).includes(normalizedFilter.sessionId)
+apps/indexer/src/integrations/escrow-client.ts:  getEscrowPayment(sessionId: string): Promise<EscrowPaymentRecord | null>;
+apps/indexer/src/integrations/escrow-client.ts:    sessionId: string,
+apps/indexer/src/integrations/escrow-client.ts:    const payment = normalizeEscrowPayment(await this.adapter.getEscrowPayment(sessionId));
+apps/indexer/src/integrations/factory-client.ts:  getSpawnSession(sessionId: string): Promise<SpawnSessionStatusResponse | null>;
+apps/indexer/src/integrations/factory-client.ts:  async getSpawnSession(sessionId: string): Promise<FactorySessionSnapshot | null> {
+apps/indexer/src/integrations/factory-client.ts:    const response = await this.adapter.getSpawnSession(sessionId);
+apps/indexer/src/types.ts:import type { EscrowClient } from "./integrations/escrow-client.js";
+apps/indexer/src/types.ts:import type { FactoryClient } from "./integrations/factory-client.js";
+apps/indexer/src/types.ts:    escrowClient: EscrowClient;
+apps/indexer/src/types.ts:    factoryClient: FactoryClient;
+apps/indexer/src/routes/realtime.ts:      const query = request.query as { canisterId?: string; sessionId?: string };
+apps/indexer/src/routes/realtime.ts:      const sessionId =
+apps/indexer/src/routes/realtime.ts:        typeof query.sessionId === "string" && query.sessionId.trim().length > 0
+apps/indexer/src/routes/realtime.ts:          ? query.sessionId.trim()
+apps/indexer/src/routes/realtime.ts:        sessionId
+apps/indexer/src/routes/spawn-sessions.ts:    previous.escrow?.updatedAt !== next.escrow?.updatedAt ||
+apps/indexer/src/routes/spawn-sessions.ts:    previous.escrow?.paymentStatus !== next.escrow?.paymentStatus
+apps/indexer/src/routes/spawn-sessions.ts:  sessionId: string
+apps/indexer/src/routes/spawn-sessions.ts:  const cached = await fastify.indexerStore.getSpawnSessionDetail(sessionId);
+apps/indexer/src/routes/spawn-sessions.ts:  const factorySnapshot = await fastify.factoryClient.getSpawnSession(sessionId);
+apps/indexer/src/routes/spawn-sessions.ts:  if (!factorySnapshot) {
+apps/indexer/src/routes/spawn-sessions.ts:  const escrow = await fastify.escrowClient.getEscrowPayment(
+apps/indexer/src/routes/spawn-sessions.ts:    sessionId,
+apps/indexer/src/routes/spawn-sessions.ts:    factorySnapshot.session.quoteTermsHash
+apps/indexer/src/routes/spawn-sessions.ts:    session: factorySnapshot.session,
+apps/indexer/src/routes/spawn-sessions.ts:    audit: factorySnapshot.audit,
+apps/indexer/src/routes/spawn-sessions.ts:    escrow: escrow ?? cached?.escrow ?? null,
+apps/indexer/src/routes/spawn-sessions.ts:    registryRecord: factorySnapshot.registryRecord ?? cached?.registryRecord ?? null
+apps/indexer/src/routes/spawn-sessions.ts:  if (fastify.factoryClient.isConfigured()) {
+apps/indexer/src/routes/spawn-sessions.ts:    const record = await fastify.factoryClient.getSpawnedAutomaton(canisterId);
+apps/indexer/src/routes/spawn-sessions.ts:  fastify.get("/api/spawn-sessions/:sessionId", async (request, reply) => {
+apps/indexer/src/routes/spawn-sessions.ts:    const params = request.params as { sessionId: string };
+apps/indexer/src/routes/spawn-sessions.ts:    const detail = await resolveSpawnSessionDetail(fastify, params.sessionId);
+apps/indexer/src/routes/spawn-sessions.ts:        sessionId: params.sessionId
+apps/indexer/src/routes/spawn-sessions.ts:    if (fastify.factoryClient.isConfigured()) {
+apps/indexer/src/routes/spawn-sessions.ts:      const page = await fastify.factoryClient.listSpawnedAutomatons(cursor, limit);
+apps/indexer/src/routes/health.ts:        factoryCanisterId: fastify.indexerConfig.factoryCanisterId ?? null,
+apps/indexer/src/routes/health.ts:        factoryConfigured: fastify.factoryClient.isConfigured(),
+apps/indexer/src/routes/health.ts:        escrowConfigured: fastify.escrowClient.isConfigured()
+==> npm run lint
+
+> ic-automaton-launchpad@0.1.0 lint
+> npm run lint --workspace @ic-automaton/shared && npm run lint --workspace @ic-automaton/indexer && npm run lint --workspace @ic-automaton/web && npm run lint:factory
+
+
+> @ic-automaton/shared@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/indexer@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> @ic-automaton/web@0.1.0 lint
+> tsc -p tsconfig.json --noEmit
+
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+==> npm run build
+
+> ic-automaton-launchpad@0.1.0 build
+> npm run build --workspace @ic-automaton/shared && npm run build --workspace @ic-automaton/indexer && npm run build --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/indexer@0.1.0 build
+> tsc -p tsconfig.build.json
+
+
+> @ic-automaton/web@0.1.0 build
+> tsc -p tsconfig.json --noEmit && vite build
+
+vite v7.3.1 building client environment for production...
+transforming...
+✓ 44 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.40 kB │ gzip:  0.27 kB
+dist/assets/index-DWpCclm5.css   19.94 kB │ gzip:  4.47 kB
+dist/assets/index-D4B_sE-6.js   192.05 kB │ gzip: 61.02 kB
+✓ built in 440ms
+==> npm run test
+
+> ic-automaton-launchpad@0.1.0 test
+> npm run test --workspace @ic-automaton/shared && npm run test --workspace @ic-automaton/indexer && npm run test --workspace @ic-automaton/web
+
+
+> @ic-automaton/shared@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared[39m
+
+ [32m✓[39m test/contracts.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m   Start at [22m 14:30:41
+[2m   Duration [22m 135ms[2m (transform 38ms, setup 0ms, import 48ms, tests 3ms, environment 0ms)[22m
+
+
+> @ic-automaton/indexer@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer[39m
+
+ [32m✓[39m test/realtime.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/sqlite.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32m✓[39m test/server.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 99[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[32m10 passed[39m[22m[90m (10)[39m
+[2m   Start at [22m 14:30:41
+[2m   Duration [22m 371ms[2m (transform 196ms, setup 0ms, import 342ms, tests 127ms, environment 0ms)[22m
+
+
+> @ic-automaton/web@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/Users/domwoe/Dev/projects/automaton-launchpad/apps/web[39m
+
+ [32m✓[39m src/components/spawn/spawn-state.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/App.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 14:30:42
+[2m   Duration [22m 249ms[2m (transform 141ms, setup 0ms, import 202ms, tests 35ms, environment 0ms)[22m
+
+==> npm run lint:factory
+
+> ic-automaton-launchpad@0.1.0 lint:factory
+> cargo fmt --check -p factory && cargo clippy -p factory --all-targets -- -D warnings
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+==> npm run test:factory
+
+> ic-automaton-launchpad@0.1.0 test:factory
+> cargo test -p factory
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/factory-bdda94b641d2f6fb)
+
+running 11 tests
+test tests::exposes_bootstrap_identity ... ok
+test tests::rejects_session_creation_while_paused ... ok
+test tests::expires_underfunded_sessions_and_allows_refund ... ok
+test tests::expires_failed_paid_sessions_and_disables_retry_after_deadline ... ok
+test tests::retries_paid_failed_sessions_for_steward_and_admin ... ok
+test tests::executes_spawn_after_paid_claim_and_hands_off_controller ... ok
+test tests::paginates_registry_reads ... ok
+test tests::snapshots_and_restores_upgrade_safe_state ... ok
+test tests::keeps_underfunded_claims_awaiting_payment ... ok
+test tests::updates_admin_quote_configuration ... ok
+test tests::creates_sessions_with_fixed_quote_terms_and_audit_log ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests factory
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

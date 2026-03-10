@@ -1,0 +1,7 @@
+COMPLETED
+
+The indexer now loads the configured canister ID list into a durable startup registry instead of only validating and exposing it. The startup seed happens in [server.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/server.ts#L59), backed by the new `configured_canisters` table in [schema.sql](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/store/schema.sql#L49) and the store sync/list methods in [sqlite.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/store/sqlite.ts#L69). Coverage was added in [server.test.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/test/server.test.ts#L203) and [sqlite.test.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/test/sqlite.test.ts#L62).
+
+The required Ralph artifacts were written to [S01-load-the-configured-canister-id-list-on-startup.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/checklists/S01-load-the-configured-canister-id-list-on-startup.md#L1) and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md#L393).
+
+Validation passed: `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, `npm run test:factory`.

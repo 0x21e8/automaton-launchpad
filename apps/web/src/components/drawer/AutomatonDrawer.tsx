@@ -1,0 +1,304 @@
+import { useEffect, useState } from "react";
+
+import type { AutomatonDetail } from "../../../../../packages/shared/src/automaton.js";
+import { CommandLinePanel } from "./CommandLinePanel";
+import { MonologuePanel } from "./MonologuePanel";
+
+function formatUsd(value: string | null): string {
+  if (value === null) {
+    return "n/a";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  }).format(Number(value));
+}
+
+function formatEth(wei: string | null): string {
+  if (wei === null) {
+    return "n/a";
+  }
+
+  return `${(Number(wei) / 1e18).toFixed(3)} ETH`;
+}
+
+function formatCycles(value: number): string {
+  if (value >= 1_000_000_000_000) {
+    return `${(value / 1_000_000_000_000).toFixed(2)}T cycles`;
+  }
+
+  return `${value.toLocaleString("en-US")} cycles`;
+}
+
+function formatAddress(value: string): string {
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+interface AutomatonDrawerProps {
+  automaton: AutomatonDetail | null;
+  errorMessage: string | null;
+  isLoading: boolean;
+  isOpen: boolean;
+  onClose: () => void;
+  selectedCanisterId: string | null;
+  viewerAddress: string | null;
+}
+
+function isNotFoundError(errorMessage: string | null): boolean {
+  return errorMessage?.toLowerCase().includes("not found") ?? false;
+}
+
+export function AutomatonDrawer({
+  automaton,
+  errorMessage,
+  isLoading,
+  isOpen,
+  onClose,
+  selectedCanisterId,
+  viewerAddress
+}: AutomatonDrawerProps) {
+  const [copyLabel, setCopyLabel] = useState("COPY");
+
+  useEffect(() => {
+    setCopyLabel("COPY");
+  }, [automaton]);
+
+  const canExecute =
+    automaton !== null &&
+    viewerAddress !== null &&
+    automaton.steward.address.toLowerCase() === viewerAddress.toLowerCase();
+  const detailMissing = isNotFoundError(errorMessage);
+
+  async function copyAddress() {
+    if (
+      automaton === null ||
+      automaton.ethAddress === null ||
+      typeof navigator === "undefined" ||
+      navigator.clipboard === undefined ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(automaton.ethAddress);
+    setCopyLabel("OK");
+
+    window.setTimeout(() => {
+      setCopyLabel("COPY");
+    }, 1200);
+  }
+
+  const title = isLoading
+    ? "Loading automaton detail"
+    : errorMessage !== null
+      ? detailMissing
+        ? "Indexed automaton not found"
+        : "Detail load failed"
+      : automaton?.name ?? "Select an automaton";
+  const tier = automaton?.tier ?? "normal";
+  const accessLabel =
+    automaton === null
+      ? isLoading
+        ? "Resolving inspection access"
+        : errorMessage !== null
+          ? detailMissing
+            ? "The selected automaton is not currently available in the index."
+            : "Inspection data is unavailable until the detail request succeeds."
+          : "Select an indexed automaton to inspect access."
+      : viewerAddress === null
+        ? "Inspection only; wallet detection is not active in this UI"
+        : canExecute
+          ? "Detected wallet matches the recorded steward address. Live writes still happen outside this UI."
+          : "Inspection only; detected wallet does not match the recorded steward address";
+  const detailFallbackCopy = isLoading
+    ? "Loading the indexed canister snapshot."
+    : errorMessage !== null
+      ? detailMissing
+        ? selectedCanisterId === null
+          ? "The selected automaton is no longer indexed."
+          : `No indexed detail is available for ${selectedCanisterId}.`
+        : `Detail request failed: ${errorMessage}`
+      : "Select an indexed automaton to inspect its canister.";
+  const versionFallbackCopy = isLoading
+    ? "Loading indexed version metadata."
+    : errorMessage !== null
+      ? detailMissing
+        ? "Version metadata is unavailable because this automaton is not indexed."
+        : "Version metadata is unavailable until the detail request succeeds."
+      : "Commit metadata appears after selection.";
+
+  return (
+    <aside
+      aria-hidden={!isOpen}
+      className={`automaton-drawer${isOpen ? " is-open" : ""}`}
+    >
+      <div className="drawer-inner">
+        <button className="close-btn" onClick={onClose} type="button">
+          CLOSE ×
+        </button>
+
+        <div className="drawer-top">
+          <h2>{title}</h2>
+          <span className={`tier-pill tier-${tier}`}>
+            {automaton?.tier ?? "standby"}
+          </span>
+          <span className="chain-badge">
+            {automaton?.chain.toUpperCase() ?? "BASE"}
+          </span>
+        </div>
+
+        <div className="drawer-grid">
+          <div>
+            <div className="detail-field">
+              <div className="lbl">ETH Address</div>
+              <div className="addr-row">
+                <span className="addr-text">
+                  {isLoading
+                    ? "Loading address"
+                    : automaton?.ethAddress ?? "Not available yet"}
+                </span>
+                <button
+                  className={`icon-btn${copyLabel === "OK" ? " copied" : ""}`}
+                  disabled={automaton?.ethAddress === null || automaton === null}
+                  onClick={() => {
+                    void copyAddress();
+                  }}
+                  type="button"
+                >
+                  {copyLabel}
+                </button>
+                <a
+                  className="icon-btn"
+                  href={automaton?.explorerUrl ?? "#"}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  SCAN
+                </a>
+              </div>
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Steward</div>
+              <div className="addr-row">
+                <span className="addr-text">
+                  {automaton === null
+                    ? isLoading
+                      ? "Loading steward identity"
+                      : errorMessage ?? "Select a live automaton"
+                    : automaton.steward.ensName !== null
+                      ? `${automaton.steward.ensName} ${formatAddress(automaton.steward.address)}`
+                      : formatAddress(automaton.steward.address)}
+                </span>
+              </div>
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Canister</div>
+              {automaton === null ? (
+                <p className="empty-copy">{detailFallbackCopy}</p>
+              ) : (
+                <a
+                  className="detail-link"
+                  href={automaton.canisterUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {automaton.canisterId}
+                </a>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="detail-field">
+              <div className="lbl">ETH Balance</div>
+              <div className="val">
+                {automaton === null
+                  ? isLoading
+                    ? "loading"
+                    : "n/a"
+                  : formatEth(automaton.financials.ethBalanceWei)}
+              </div>
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Cycles Balance</div>
+              <div className="val">
+                {automaton === null
+                  ? isLoading
+                    ? "loading"
+                    : "n/a"
+                  : formatCycles(automaton.financials.cyclesBalance)}
+              </div>
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Net Worth</div>
+              <div className="val">
+                {automaton === null
+                  ? isLoading
+                    ? "loading"
+                    : "n/a"
+                  : formatUsd(automaton.financials.netWorthUsd)}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="detail-field">
+              <div className="lbl">Heartbeat</div>
+              <div className="val">
+                {automaton === null
+                  ? isLoading
+                    ? "loading"
+                    : "n/a"
+                  : `${automaton.runtime.heartbeatIntervalSeconds ?? "n/a"}s`}
+              </div>
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Version</div>
+              {automaton === null ? (
+                <p className="empty-copy">{versionFallbackCopy}</p>
+              ) : (
+                <a
+                  className="detail-link"
+                  href={`https://github.com/0x21e8/ic-automaton/commit/${automaton.version.commitHash}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {automaton.version.shortCommitHash}
+                </a>
+              )}
+            </div>
+
+            <div className="detail-field">
+              <div className="lbl">Access</div>
+              <div className="val">{accessLabel}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="drawer-bottom">
+          <MonologuePanel
+            entries={automaton?.monologue ?? []}
+            errorMessage={errorMessage}
+            isLoading={isLoading}
+            selectedCanisterId={selectedCanisterId}
+          />
+          <CommandLinePanel
+            automaton={automaton}
+            canExecute={canExecute}
+            errorMessage={errorMessage}
+            isLoading={isLoading}
+            selectedCanisterId={selectedCanisterId}
+            viewerAddress={viewerAddress}
+          />
+        </div>
+      </div>
+    </aside>
+  );
+}

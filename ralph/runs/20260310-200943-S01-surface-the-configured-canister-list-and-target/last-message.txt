@@ -1,0 +1,12 @@
+COMPLETED
+
+`/health` now surfaces both the configured canister list and the effective ingestion target. The route adds `discovery.targetNetwork` with `target`, `icHost`, and `localReplica` data in local mode at [health.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/routes/health.ts#L3). I also locked the contract with server coverage for the default local target and a mainnet override at [server.test.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/test/server.test.ts#L160).
+
+The required Ralph artifacts are updated at [S01-surface-the-configured-canister-list-and-target.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/checklists/S01-surface-the-configured-canister-list-and-target.md) and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
+
+Validation run:
+- `npm run lint`: passed
+- `npm run build`: passed
+- `npm run test`: passed
+- `npm run lint:factory`: passed
+- `npm run test:factory`: passed

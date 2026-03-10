@@ -1,0 +1,274 @@
+import type {
+  CreateSpawnSessionRequest,
+  SpawnAsset,
+  SpawnQuote,
+  SpawnSession,
+  SpawnSessionDetail
+} from "@ic-automaton/shared";
+import { useEffect, useState } from "react";
+
+import {
+  createSpawnSession,
+  fetchSpawnSessionDetail,
+  refundSpawnSession,
+  retrySpawnSession
+} from "../api/spawn";
+import { subscribeToRealtimeEvents } from "../api/ws";
+
+const SPAWN_SESSION_POLL_INTERVAL_MS = 4_000;
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown spawn session error.";
+}
+
+function isPollingComplete(session: SpawnSession | null): boolean {
+  if (session === null) {
+    return true;
+  }
+
+  if (session.state === "complete") {
+    return true;
+  }
+
+  return session.state === "expired" && session.paymentStatus === "refunded";
+}
+
+function formatAssetAmount(amount: string, asset: SpawnAsset): string {
+  return `${amount} ${asset.toUpperCase()}`;
+}
+
+function titleCase(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function formatSpawnSessionStateLabel(value: string): string {
+  return titleCase(value);
+}
+
+export function describeSpawnSessionProgress(session: SpawnSession): string {
+  switch (session.state) {
+    case "awaiting_payment":
+      return "Waiting for the quoted escrow payment to arrive before the factory can proceed.";
+    case "payment_detected":
+      return "Escrow payment was detected. The factory is preparing the spawn pipeline.";
+    case "spawning":
+      return "The factory is creating the automaton canister and applying its initial configuration.";
+    case "funding_automaton":
+      return "Spawn succeeded. Net funds are being forwarded to the new automaton address.";
+    case "complete":
+      return "Spawn completed and the new automaton should now appear on the grid.";
+    case "failed":
+      return session.retryable
+        ? "Spawn failed but can still be retried before expiration."
+        : "Spawn failed and is waiting for expiration before any refund path opens.";
+    case "expired":
+      return session.refundable
+        ? "This session expired unresolved. Funds can now be reclaimed through refund."
+        : "This session expired and no additional action is currently available.";
+    default:
+      return "Spawn status unavailable.";
+  }
+}
+
+export function derivePaymentInstructions(
+  session: SpawnSession | null,
+  detail: SpawnSessionDetail | null,
+  quote: SpawnQuote | null
+) {
+  if (session === null) {
+    return null;
+  }
+
+  return {
+    paymentAddress: detail?.escrow?.paymentAddress ?? quote?.payment.paymentAddress ?? null,
+    grossAmount: detail?.escrow?.requiredGrossAmount ?? quote?.payment.grossAmount ?? session.grossAmount,
+    asset: session.asset,
+    quoteTermsHash: session.quoteTermsHash,
+    expiresAt: session.expiresAt
+  };
+}
+
+export function useSpawnSession() {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [quote, setQuote] = useState<SpawnQuote | null>(null);
+  const [detail, setDetail] = useState<SpawnSessionDetail | null>(null);
+  const [provisionalSession, setProvisionalSession] = useState<SpawnSession | null>(
+    null
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isMutating, setIsMutating] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  const session = detail?.session ?? provisionalSession;
+
+  async function refresh(targetSessionId = sessionId) {
+    if (targetSessionId === null) {
+      return null;
+    }
+
+    setIsRefreshing(true);
+
+    try {
+      const nextDetail = await fetchSpawnSessionDetail(targetSessionId);
+      setDetail(nextDetail);
+      setProvisionalSession(nextDetail.session);
+      setError(null);
+      return nextDetail;
+    } catch (nextError: unknown) {
+      setError(getErrorMessage(nextError));
+      return null;
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (sessionId === null) {
+      return;
+    }
+
+    void refresh(sessionId);
+  }, [refreshToken, sessionId]);
+
+  useEffect(() => {
+    if (sessionId === null || isPollingComplete(session)) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setRefreshToken((current) => current + 1);
+    }, SPAWN_SESSION_POLL_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [session, sessionId]);
+
+  useEffect(() => {
+    if (sessionId === null) {
+      return;
+    }
+
+    return subscribeToRealtimeEvents(
+      {
+        sessionId
+      },
+      {
+        onEvent(event) {
+          switch (event.type) {
+            case "spawn.session.updated":
+            case "spawn.session.completed":
+            case "spawn.session.failed":
+            case "spawn.session.expired":
+              setDetail((current) => ({
+                session: event.session,
+                audit: event.audit,
+                escrow: current?.escrow ?? null,
+                registryRecord: current?.registryRecord ?? null
+              }));
+              setProvisionalSession(event.session);
+
+              if (event.type !== "spawn.session.updated") {
+                setRefreshToken((current) => current + 1);
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      }
+    );
+  }, [sessionId]);
+
+  return {
+    sessionId,
+    session,
+    detail,
+    quote,
+    error,
+    isCreating,
+    isRefreshing,
+    isMutating,
+    paymentInstructions: derivePaymentInstructions(session, detail, quote),
+    async create(request: CreateSpawnSessionRequest) {
+      setIsCreating(true);
+      setError(null);
+
+      try {
+        const response = await createSpawnSession(request);
+        setSessionId(response.session.sessionId);
+        setQuote(response.quote);
+        setDetail(null);
+        setProvisionalSession(response.session);
+        setRefreshToken((current) => current + 1);
+        return response;
+      } catch (nextError: unknown) {
+        setError(getErrorMessage(nextError));
+        return null;
+      } finally {
+        setIsCreating(false);
+      }
+    },
+    async retry() {
+      if (sessionId === null) {
+        return null;
+      }
+
+      setIsMutating(true);
+      setError(null);
+
+      try {
+        await retrySpawnSession(sessionId);
+        setRefreshToken((current) => current + 1);
+        return await refresh(sessionId);
+      } catch (nextError: unknown) {
+        setError(getErrorMessage(nextError));
+        return null;
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    async refund() {
+      if (sessionId === null) {
+        return null;
+      }
+
+      setIsMutating(true);
+      setError(null);
+
+      try {
+        await refundSpawnSession(sessionId);
+        setRefreshToken((current) => current + 1);
+        return await refresh(sessionId);
+      } catch (nextError: unknown) {
+        setError(getErrorMessage(nextError));
+        return null;
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    reset() {
+      setSessionId(null);
+      setQuote(null);
+      setDetail(null);
+      setProvisionalSession(null);
+      setError(null);
+      setIsCreating(false);
+      setIsRefreshing(false);
+      setIsMutating(false);
+      setRefreshToken(0);
+    },
+    formatAmount() {
+      if (session === null) {
+        return null;
+      }
+
+      return formatAssetAmount(session.grossAmount, session.asset);
+    }
+  };
+}

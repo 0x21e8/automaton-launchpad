@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ic-automaton</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Azeret+Mono:wght@400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root { --bg: #f0ece4; --ink: #1a1a1a; --accent: #e63312; --muted: #999; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: 'Azeret Mono', monospace;
+    height: 100vh; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 9999;
+    pointer-events: none; opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  header {
+    border-bottom: 3px solid var(--ink); padding: 14px 32px;
+    display: flex; align-items: center; gap: 24px;
+    flex-shrink: 0; z-index: 20; background: var(--bg);
+  }
+  header h1 { font-family: 'Instrument Serif', serif; font-size: 36px; font-weight: 400; line-height: 1; }
+  header .tagline { font-size: 10px; text-transform: uppercase; letter-spacing: 3px; color: var(--muted); align-self: flex-end; margin-bottom: 4px; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .nav-menu { display: flex; gap: 0; }
+  .nav-btn {
+    background: none; border: 1px solid var(--ink); border-right: none;
+    color: var(--ink); font-family: inherit; font-size: 11px;
+    padding: 8px 20px; cursor: pointer; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase; transition: all 0.15s;
+  }
+  .nav-btn:last-child { border-right: 1px solid var(--ink); }
+  .nav-btn:hover { background: var(--ink); color: var(--bg); }
+  .connect-btn {
+    background: var(--ink); border: 2px solid var(--ink);
+    color: var(--bg); font-family: inherit; font-size: 11px;
+    padding: 8px 20px; cursor: pointer; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase; transition: all 0.15s; white-space: nowrap;
+  }
+  .connect-btn:hover { background: var(--accent); border-color: var(--accent); }
+  .connect-btn.connected { background: none; color: var(--ink); border-color: var(--ink); font-weight: 400; font-size: 10px; letter-spacing: 1px; }
+  .live-pill { font-size: 11px; border: 2px solid var(--accent); color: var(--accent); padding: 4px 12px; font-weight: 700; white-space: nowrap; }
+
+  .canvas-wrap { flex: 1; position: relative; overflow: hidden; cursor: crosshair; }
+  canvas { position: absolute; top: 0; left: 0; }
+  .tooltip {
+    position: fixed; pointer-events: none; background: var(--ink); color: var(--bg);
+    padding: 6px 12px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    font-weight: 700; z-index: 50; opacity: 0; transition: opacity 0.15s; white-space: nowrap;
+  }
+  .tooltip.visible { opacity: 1; }
+
+  /* ── Detail Drawer ── */
+  .drawer {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--ink); color: var(--bg);
+    transform: translateY(100%); transition: transform 0.35s ease;
+    z-index: 100; max-height: 60vh; overflow-y: auto;
+  }
+  .drawer.open { transform: translateY(0); }
+  .drawer-inner { padding: 24px 40px 20px; }
+  .drawer .close-btn {
+    position: absolute; top: 14px; right: 24px; background: none;
+    border: 2px solid var(--bg); color: var(--bg); font-family: inherit;
+    font-size: 10px; padding: 3px 10px; cursor: pointer;
+    font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  }
+  .drawer .close-btn:hover { background: var(--bg); color: var(--ink); }
+
+  .drawer-top {
+    display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px;
+    border-bottom: 1px solid #333; padding-bottom: 16px;
+  }
+  .drawer-top h2 { font-family: 'Instrument Serif', serif; font-size: 32px; font-weight: 400; }
+  .tier-pill {
+    font-family: 'Azeret Mono', monospace; font-size: 10px; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase; padding: 3px 10px; border: 1px solid;
+  }
+  .tier-normal { border-color: #7a7; color: #7a7; }
+  .tier-low { border-color: #b98; color: #b98; }
+  .tier-critical { border-color: #c87; color: #c87; }
+  .chain-badge {
+    font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+    padding: 3px 10px; border: 1px solid #555; color: #888;
+  }
+
+  .drawer-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-bottom: 20px; }
+
+  .detail-field { margin-bottom: 12px; }
+  .detail-field .lbl {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 2px;
+    color: #555; margin-bottom: 4px;
+  }
+  .detail-field .val { font-size: 12px; color: #ccc; }
+
+  /* Copyable address row */
+  .addr-row {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; word-break: break-all; color: #aaa;
+  }
+  .addr-row .addr-text { flex: 1; }
+  .icon-btn {
+    background: none; border: 1px solid #444; color: #777;
+    font-family: inherit; font-size: 9px; padding: 2px 6px;
+    cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+    letter-spacing: 0.5px;
+  }
+  .icon-btn:hover { border-color: #aaa; color: #ccc; }
+  .icon-btn.copied { border-color: #7a7; color: #7a7; }
+
+  /* Link style */
+  .detail-link {
+    color: #aaa; text-decoration: none; font-size: 10px;
+    border-bottom: 1px solid #444; transition: all 0.15s;
+  }
+  .detail-link:hover { color: #fff; border-color: #fff; }
+
+  /* Monologue + CLI section */
+  .drawer-bottom {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+    border-top: 1px solid #333; padding-top: 16px;
+  }
+
+  .log-section h3 {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 3px;
+    color: #555; margin-bottom: 10px;
+  }
+  .log-line {
+    font-size: 11px; line-height: 1.5; padding: 4px 0;
+    border-bottom: 1px solid #222; display: flex; gap: 12px;
+  }
+  .log-line .time { color: #444; flex-shrink: 0; font-size: 10px; }
+  .log-line .type { flex-shrink: 0; width: 50px; text-transform: uppercase; font-size: 9px; font-weight: 700; }
+  .log-line .type.action { color: #b98; }
+  .log-line .type.thought { color: #889; }
+  .log-line .msg { color: #888; }
+
+  /* CLI */
+  .cli-section h3 {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 3px;
+    color: #555; margin-bottom: 10px;
+  }
+  .cli-output {
+    background: #111; border: 1px solid #222;
+    padding: 10px 12px; font-size: 10px; color: #777;
+    height: 140px; overflow-y: auto; margin-bottom: 8px;
+    line-height: 1.6;
+  }
+  .cli-output .cli-prompt { color: #7a7; }
+  .cli-output .cli-response { color: #999; }
+  .cli-input-row { display: flex; gap: 0; }
+  .cli-prompt-label {
+    background: #222; border: 1px solid #333; border-right: none;
+    padding: 8px 10px; font-size: 11px; color: #7a7; flex-shrink: 0;
+  }
+  .cli-input {
+    flex: 1; background: #111; border: 1px solid #333;
+    font-family: inherit; font-size: 11px; padding: 8px 10px;
+    color: #ccc; outline: none;
+  }
+  .cli-input::placeholder { color: #444; }
+  .cli-send {
+    background: #333; border: 1px solid #333; border-left: none;
+    color: #999; font-family: inherit; font-size: 10px;
+    padding: 8px 14px; cursor: pointer; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase; transition: all 0.15s;
+  }
+  .cli-send:hover { background: #555; color: #fff; }
+
+  /* ── Wizard ── */
+  .overlay {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(26,26,26,0.6); backdrop-filter: blur(4px);
+    display: none; place-items: center;
+  }
+  .overlay.open { display: grid; }
+  .wizard {
+    width: 560px; max-height: 85vh; background: var(--bg);
+    border: 3px solid var(--ink); padding: 0; overflow: hidden; position: relative;
+  }
+  .wizard-header {
+    padding: 20px 32px 16px; border-bottom: 1px solid #ccc;
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .wizard-header h2 { font-family: 'Instrument Serif', serif; font-size: 28px; font-weight: 400; }
+  .wizard-header .step-label { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); }
+  .wizard-close { position: absolute; top: 16px; right: 20px; background: none; border: none; font-family: inherit; font-size: 18px; cursor: pointer; color: var(--muted); }
+  .wizard-close:hover { color: var(--ink); }
+  .wizard-progress { height: 3px; background: #ddd; }
+  .wizard-progress-fill { height: 100%; background: var(--ink); transition: width 0.3s ease; }
+  .wizard-body { padding: 28px 32px; overflow-y: auto; max-height: 55vh; }
+  .wizard-footer { padding: 16px 32px; border-top: 1px solid #ccc; display: flex; justify-content: space-between; align-items: center; }
+  .wiz-btn {
+    background: none; border: 2px solid var(--ink); color: var(--ink);
+    font-family: inherit; font-size: 11px; padding: 8px 24px;
+    cursor: pointer; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; transition: all 0.15s;
+  }
+  .wiz-btn:hover { background: var(--ink); color: var(--bg); }
+  .wiz-btn.primary { background: var(--ink); color: var(--bg); }
+  .wiz-btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+  .wiz-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .wiz-btn:disabled:hover { background: none; color: var(--ink); }
+  .step { display: none; }
+  .step.active { display: block; }
+  .step-title { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 20px; }
+
+  .option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+  .option-card {
+    border: 2px solid #ccc; padding: 16px; cursor: pointer;
+    transition: all 0.15s; position: relative;
+  }
+  .option-card:hover { border-color: var(--ink); }
+  .option-card.selected { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+  .option-card .opt-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .option-card .opt-desc { font-size: 10px; color: var(--muted); line-height: 1.5; }
+  .option-card.selected .opt-desc { color: #999; }
+  .option-card.disabled {
+    opacity: 0.35; cursor: not-allowed; pointer-events: none;
+  }
+  .option-card .coming-soon {
+    display: none; font-size: 8px; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--muted); margin-top: 6px; font-weight: 700;
+  }
+  .option-card.disabled .coming-soon { display: block; }
+
+  .option-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .risk-section { margin-bottom: 24px; }
+  .risk-labels { display: flex; justify-content: space-between; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-top: 8px; }
+  input[type="range"] { -webkit-appearance: none; width: 100%; height: 3px; background: #ccc; outline: none; margin: 12px 0; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; background: var(--ink); border-radius: 0; cursor: pointer; }
+  .risk-value { font-family: 'Instrument Serif', serif; font-size: 28px; text-align: center; margin-top: 8px; }
+  .checklist { margin-bottom: 16px; }
+  .check-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border: 1px solid #ddd;
+    margin-bottom: 6px; cursor: pointer; transition: all 0.15s; font-size: 11px;
+  }
+  .check-item:hover { border-color: var(--ink); }
+  .check-item.checked { border-color: var(--ink); background: rgba(26,26,26,0.04); }
+  .check-box {
+    width: 16px; height: 16px; border: 2px solid #ccc;
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; transition: all 0.15s;
+  }
+  .check-item.checked .check-box { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+  .check-label-title { font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .check-label-desc { font-size: 9px; color: var(--muted); margin-top: 2px; }
+  .fund-section { margin-bottom: 20px; }
+  .fund-row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .fund-input-wrap { flex: 1; display: flex; border: 2px solid var(--ink); align-items: center; }
+  .fund-input { flex: 1; background: none; border: none; font-family: inherit; font-size: 18px; padding: 10px 14px; outline: none; color: var(--ink); font-weight: 700; }
+  .fund-currency { padding: 10px 14px; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); border-left: 1px solid #ccc; cursor: pointer; user-select: none; transition: all 0.15s; }
+  .fund-currency:hover { background: var(--ink); color: var(--bg); }
+  .fund-currency.active { background: var(--ink); color: var(--bg); }
+  .fund-min { font-size: 10px; color: var(--muted); }
+  .fund-min.error { color: var(--accent); }
+  .fund-usd { font-size: 10px; color: var(--muted); margin-top: 4px; }
+  .summary-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #ddd; font-size: 12px; }
+  .summary-row .s-label { color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; }
+  .summary-row .s-value { font-weight: 700; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ic-automaton</h1>
+  <span class="tagline">Self-sovereign AI agents on-chain</span>
+  <div class="header-right">
+    <div class="nav-menu">
+      <button class="nav-btn" onclick="openSpawn()">Spawn</button>
+      <button class="nav-btn" onclick="alert('Strategies — coming soon')">Strategies</button>
+      <button class="nav-btn" onclick="alert('Skills — coming soon')">Skills</button>
+    </div>
+    <div class="live-pill" id="live-count">0 LIVE</div>
+    <button class="connect-btn" id="connectBtn" onclick="toggleConnect()">Connect Wallet</button>
+  </div>
+</header>
+
+<div class="canvas-wrap" id="canvasWrap"><canvas id="grid"></canvas></div>
+<div class="tooltip" id="tooltip"></div>
+
+<!-- ── Detail Drawer ── -->
+<div class="drawer" id="drawer">
+  <div class="drawer-inner">
+    <button class="close-btn" onclick="closeDrawer()">Close ×</button>
+
+    <div class="drawer-top">
+      <h2 id="dr-name"></h2>
+      <span class="tier-pill" id="dr-tier-pill"></span>
+      <span class="chain-badge" id="dr-chain"></span>
+    </div>
+
+    <div class="drawer-grid">
+      <!-- Column 1 -->
+      <div>
+        <div class="detail-field">
+          <div class="lbl">ETH Address</div>
+          <div class="addr-row">
+            <span class="addr-text" id="dr-addr"></span>
+            <button class="icon-btn" id="dr-copy" onclick="copyAddr()">COPY</button>
+            <a class="icon-btn" id="dr-explorer" href="#" target="_blank" rel="noopener">SCAN</a>
+          </div>
+        </div>
+        <div class="detail-field">
+          <div class="lbl">Steward</div>
+          <div class="addr-row">
+            <span class="addr-text" id="dr-steward"></span>
+          </div>
+        </div>
+        <div class="detail-field">
+          <div class="lbl">Canister</div>
+          <div><a class="detail-link" id="dr-canister-link" href="#" target="_blank" rel="noopener"><span id="dr-canister"></span></a></div>
+        </div>
+      </div>
+
+      <!-- Column 2 -->
+      <div>
+        <div class="detail-field">
+          <div class="lbl">ETH Balance</div>
+          <div class="val" id="dr-eth"></div>
+        </div>
+        <div class="detail-field">
+          <div class="lbl">Cycles Balance</div>
+          <div class="val" id="dr-cycles"></div>
+        </div>
+        <div class="detail-field">
+          <div class="lbl">Net Worth</div>
+          <div class="val" id="dr-worth"></div>
+        </div>
+      </div>
+
+      <!-- Column 3 -->
+      <div>
+        <div class="detail-field">
+          <div class="lbl">Heartbeat</div>
+          <div class="val" id="dr-beat"></div>
+        </div>
+        <div class="detail-field">
+          <div class="lbl">Version</div>
+          <div><a class="detail-link" id="dr-commit-link" href="#" target="_blank" rel="noopener"><span id="dr-commit"></span></a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="drawer-bottom">
+      <div class="log-section">
+        <h3>Inner Monologue</h3>
+        <div id="dr-log"></div>
+      </div>
+      <div class="cli-section">
+        <h3>Command Line</h3>
+        <div class="cli-output" id="cliOutput">
+          <div><span class="cli-prompt">&gt;</span> <span class="cli-response">Connected to automaton. Type 'help' for commands.</span></div>
+        </div>
+        <div class="cli-input-row">
+          <span class="cli-prompt-label">&gt;</span>
+          <input class="cli-input" id="cliInput" type="text" placeholder="enter command..." onkeydown="if(event.key==='Enter')sendCli()">
+          <button class="cli-send" onclick="sendCli()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Spawn Wizard ── -->
+<div class="overlay" id="spawnOverlay" onclick="if(event.target===this)closeSpawn()">
+  <div class="wizard">
+    <button class="wizard-close" onclick="closeSpawn()">&times;</button>
+    <div class="wizard-header">
+      <h2>Spawn Automaton</h2>
+      <span class="step-label" id="stepLabel">Step 1 of 5</span>
+    </div>
+    <div class="wizard-progress"><div class="wizard-progress-fill" id="progressFill" style="width:20%"></div></div>
+    <div class="wizard-body">
+      <div class="step active" id="step1">
+        <div class="step-title">Select Chain</div>
+        <div class="option-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+          <div class="option-card selected" data-chain="base" onclick="selectChain(this)">
+            <div class="opt-title">Base</div>
+            <div class="opt-desc">Ethereum L2 — low fees, fast finality. Primary supported chain.</div>
+          </div>
+          <div class="option-card disabled" data-chain="ethereum">
+            <div class="opt-title">Ethereum</div>
+            <div class="opt-desc">Mainnet L1 — highest security, higher gas costs.</div>
+            <div class="coming-soon">Coming Soon</div>
+          </div>
+          <div class="option-card disabled" data-chain="arbitrum">
+            <div class="opt-title">Arbitrum</div>
+            <div class="opt-desc">Optimistic rollup — low fees, broad DeFi ecosystem.</div>
+            <div class="coming-soon">Coming Soon</div>
+          </div>
+          <div class="option-card disabled" data-chain="optimism">
+            <div class="opt-title">Optimism</div>
+            <div class="opt-desc">OP Stack L2 — growing ecosystem, retroactive funding.</div>
+            <div class="coming-soon">Coming Soon</div>
+          </div>
+          <div class="option-card disabled" data-chain="polygon">
+            <div class="opt-title">Polygon</div>
+            <div class="opt-desc">PoS sidechain — very low fees, large user base.</div>
+            <div class="coming-soon">Coming Soon</div>
+          </div>
+          <div class="option-card disabled" data-chain="hyperliquid">
+            <div class="opt-title">Hyperliquid</div>
+            <div class="opt-desc">Performant L1 — on-chain order book, perps native.</div>
+            <div class="coming-soon">Coming Soon</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" id="step2">
+        <div class="step-title">Risk Appetite</div>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:20px;line-height:1.6">
+          How aggressively should your automaton pursue yield? Conservative automatons preserve capital. Aggressive ones chase higher returns with more volatility.
+        </p>
+        <div class="risk-section">
+          <input type="range" id="riskSlider" min="1" max="5" value="3" oninput="updateRisk()">
+          <div class="risk-labels"><span>Conservative</span><span>Moderate</span><span>Aggressive</span></div>
+          <div class="risk-value" id="riskValue">Balanced</div>
+        </div>
+      </div>
+
+      <div class="step" id="step3">
+        <div class="step-title">Initial Strategies</div>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:16px;line-height:1.6">Select which DeFi strategies your automaton can execute.</p>
+        <div class="checklist" id="strategyList">
+          <div class="check-item checked" onclick="toggleCheck(this)"><div class="check-box">&times;</div><div><div class="check-label-title">Yield Farming</div><div class="check-label-desc">Provide liquidity to AMM pools for swap fee revenue</div></div></div>
+          <div class="check-item" onclick="toggleCheck(this)"><div class="check-box"></div><div><div class="check-label-title">Lending</div><div class="check-label-desc">Supply assets to lending protocols for interest income</div></div></div>
+          <div class="check-item" onclick="toggleCheck(this)"><div class="check-box"></div><div><div class="check-label-title">Arbitrage</div><div class="check-label-desc">Exploit price differences across DEXs — requires higher risk tolerance</div></div></div>
+          <div class="check-item checked" onclick="toggleCheck(this)"><div class="check-box">&times;</div><div><div class="check-label-title">Cycle Management</div><div class="check-label-desc">Autonomously convert assets to ICP cycles for self-sustenance</div></div></div>
+        </div>
+      </div>
+
+      <div class="step" id="step4">
+        <div class="step-title">Skills</div>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:16px;line-height:1.6">Skills define how your automaton interacts with the world beyond DeFi.</p>
+        <div class="checklist" id="skillList">
+          <div class="check-item checked" onclick="toggleCheck(this)"><div class="check-box">&times;</div><div><div class="check-label-title">Spawn Children</div><div class="check-label-desc">Create new automatons to scale operations</div></div></div>
+          <div class="check-item" onclick="toggleCheck(this)"><div class="check-box"></div><div><div class="check-label-title">Messaging</div><div class="check-label-desc">Send and receive messages from other automatons</div></div></div>
+          <div class="check-item" onclick="toggleCheck(this)"><div class="check-box"></div><div><div class="check-label-title">Portfolio Reporting</div><div class="check-label-desc">Periodic reports on holdings, P&L, and strategy performance</div></div></div>
+          <div class="check-item" onclick="toggleCheck(this)"><div class="check-box"></div><div><div class="check-label-title">Emergency Shutdown</div><div class="check-label-desc">Kill switch — withdraw all funds back to your wallet if triggered</div></div></div>
+        </div>
+      </div>
+
+      <div class="step" id="step5">
+        <div class="step-title">Fund Your Automaton</div>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:20px;line-height:1.6">Your automaton needs initial capital. Minimum $50 in ETH or USDC.</p>
+        <div class="fund-section">
+          <div class="fund-row"><div class="fund-input-wrap">
+            <input class="fund-input" id="fundAmount" type="number" placeholder="0.00" value="100" oninput="updateFund()">
+            <span class="fund-currency active" id="fundUSDC" onclick="setCurrency('USDC')">USDC</span>
+            <span class="fund-currency" id="fundETH" onclick="setCurrency('ETH')">ETH</span>
+          </div></div>
+          <div class="fund-usd" id="fundUsd">~ $100.00</div>
+          <div class="fund-min" id="fundMin">Minimum: $50.00</div>
+        </div>
+        <div style="margin-top:24px">
+          <div class="step-title" style="margin-bottom:16px">Summary</div>
+          <div class="summary-row"><span class="s-label">Chain</span><span class="s-value" id="sumChain">Base</span></div>
+          <div class="summary-row"><span class="s-label">Risk</span><span class="s-value" id="sumRisk">Balanced</span></div>
+          <div class="summary-row"><span class="s-label">Strategies</span><span class="s-value" id="sumStrat">2 selected</span></div>
+          <div class="summary-row"><span class="s-label">Skills</span><span class="s-value" id="sumSkills">1 selected</span></div>
+          <div class="summary-row"><span class="s-label">Funding</span><span class="s-value" id="sumFund">100 USDC</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="wizard-footer">
+      <button class="wiz-btn" id="wizBack" onclick="wizPrev()" disabled>Back</button>
+      <button class="wiz-btn primary" id="wizNext" onclick="wizNext()">Next</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Helpers ──
+function r(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function rf(a,b){return a+Math.random()*(b-a)}
+function hexStr(len){return Array.from({length:len},()=>'0123456789abcdef'[r(0,15)]).join('')}
+function ethAddr(){return '0x'+hexStr(40)}
+function canisterId(){return hexStr(5)+'-'+hexStr(5)+'-'+hexStr(5)+'-'+hexStr(5)+'-cai'}
+function commitHash(){return hexStr(7)}
+function lerp(a,b,t){return a+(b-a)*Math.max(0,Math.min(1,t))}
+
+// ── Chain explorers ──
+const EXPLORERS = { base: 'https://basescan.org/address/', ethereum: 'https://etherscan.io/address/', arbitrum: 'https://arbiscan.io/address/', optimism: 'https://optimistic.etherscan.io/address/', polygon: 'https://polygonscan.com/address/', hyperliquid: '#' };
+
+// ── Wallet ──
+let walletConnected=false, walletAddr='';
+function toggleConnect(){
+  const btn=document.getElementById('connectBtn');
+  if(walletConnected){walletConnected=false;btn.textContent='Connect Wallet';btn.classList.remove('connected');}
+  else{walletAddr=ethAddr();walletConnected=true;btn.textContent=walletAddr.slice(0,6)+'...'+walletAddr.slice(-4);btn.classList.add('connected');}
+}
+
+// ── Spawn wizard ──
+let wizStep=1;const TOTAL_STEPS=5;
+const RISK_LABELS=['','Conservative','Cautious','Balanced','Aggressive','Degen'];
+let spawnState={chain:'base',risk:3,currency:'USDC'};
+
+function openSpawn(){if(!walletConnected)toggleConnect();wizStep=1;updateWizard();document.getElementById('spawnOverlay').classList.add('open');}
+function closeSpawn(){document.getElementById('spawnOverlay').classList.remove('open');}
+function updateWizard(){
+  document.querySelectorAll('.step').forEach((s,i)=>s.classList.toggle('active',i===wizStep-1));
+  document.getElementById('stepLabel').textContent=`Step ${wizStep} of ${TOTAL_STEPS}`;
+  document.getElementById('progressFill').style.width=(wizStep/TOTAL_STEPS*100)+'%';
+  document.getElementById('wizBack').disabled=wizStep===1;
+  const nb=document.getElementById('wizNext');
+  if(wizStep===TOTAL_STEPS){nb.textContent='Spawn';nb.onclick=doSpawn;}else{nb.textContent='Next';nb.onclick=wizNext;}
+  if(wizStep===TOTAL_STEPS)updateSummary();
+}
+function wizNext(){if(wizStep<TOTAL_STEPS){wizStep++;updateWizard();}}
+function wizPrev(){if(wizStep>1){wizStep--;updateWizard();}}
+function selectChain(el){if(el.classList.contains('disabled'))return;el.parentElement.querySelectorAll('.option-card').forEach(c=>c.classList.remove('selected'));el.classList.add('selected');spawnState.chain=el.dataset.chain;}
+function updateRisk(){const v=document.getElementById('riskSlider').value;spawnState.risk=parseInt(v);document.getElementById('riskValue').textContent=RISK_LABELS[v];}
+function toggleCheck(el){el.classList.toggle('checked');el.querySelector('.check-box').textContent=el.classList.contains('checked')?'\u00d7':'';}
+function setCurrency(c){spawnState.currency=c;document.getElementById('fundUSDC').classList.toggle('active',c==='USDC');document.getElementById('fundETH').classList.toggle('active',c==='ETH');updateFund();}
+function updateFund(){const v=parseFloat(document.getElementById('fundAmount').value)||0;const usd=spawnState.currency==='USDC'?v:v*2400;document.getElementById('fundUsd').textContent=`~ $${usd.toFixed(2)}`;const el=document.getElementById('fundMin');if(usd<50){el.textContent=`Minimum: $50.00 — need $${(50-usd).toFixed(2)} more`;el.classList.add('error');}else{el.textContent='Minimum: $50.00';el.classList.remove('error');}}
+function updateSummary(){document.getElementById('sumChain').textContent=spawnState.chain.charAt(0).toUpperCase()+spawnState.chain.slice(1);document.getElementById('sumRisk').textContent=RISK_LABELS[spawnState.risk];document.getElementById('sumStrat').textContent=document.querySelectorAll('#strategyList .check-item.checked').length+' selected';document.getElementById('sumSkills').textContent=document.querySelectorAll('#skillList .check-item.checked').length+' selected';document.getElementById('sumFund').textContent=(document.getElementById('fundAmount').value||'0')+' '+spawnState.currency;}
+function doSpawn(){const v=parseFloat(document.getElementById('fundAmount').value)||0;const usd=spawnState.currency==='USDC'?v:v*2400;if(usd<50){document.getElementById('fundMin').classList.add('error');return;}closeSpawn();for(const a of automatons)a.triggerMitosis();}
+
+// ── Detail drawer ──
+let currentDrawerAutomaton = null;
+
+// Mock ENS names (some stewards have them)
+const ENS_NAMES = ['vitalik.eth','dom.eth','griff.eth','lefteris.eth','austingriffith.eth',null,null,null,null,null];
+
+function copyAddr(){
+  const addr=document.getElementById('dr-addr').textContent;
+  navigator.clipboard.writeText(addr).then(()=>{
+    const btn=document.getElementById('dr-copy');
+    btn.textContent='OK';btn.classList.add('copied');
+    setTimeout(()=>{btn.textContent='COPY';btn.classList.remove('copied');},1500);
+  });
+}
+
+function openDrawer(a){
+  currentDrawerAutomaton=a;
+  document.getElementById('dr-name').textContent=a.name;
+  const tp=document.getElementById('dr-tier-pill');
+  tp.textContent=a.tier;tp.className='tier-pill tier-'+a.tier;
+  document.getElementById('dr-chain').textContent=a.chain.toUpperCase();
+  document.getElementById('dr-addr').textContent=a.addr;
+  document.getElementById('dr-explorer').href=EXPLORERS[a.chain]+a.addr;
+  document.getElementById('dr-eth').textContent=a.eth+' ETH';
+  document.getElementById('dr-cycles').textContent=a.cycles+' cycles';
+  document.getElementById('dr-worth').textContent=a.netWorthETH+' ETH';
+  document.getElementById('dr-beat').textContent=a.beat+'s';
+
+  // Steward (with mock ENS)
+  const ens=a.stewardENS;
+  const stewardEl=document.getElementById('dr-steward');
+  if(ens){
+    stewardEl.innerHTML=`<span style="color:#ccc">${ens}</span> <span style="color:#555;font-size:9px">${a.steward.slice(0,6)}...${a.steward.slice(-4)}</span>`;
+  } else {
+    stewardEl.textContent=a.steward.slice(0,6)+'...'+a.steward.slice(-4);
+  }
+
+  // Canister
+  document.getElementById('dr-canister').textContent=a.canister;
+  document.getElementById('dr-canister-link').href='https://'+a.canister.replace('-cai','')+'.icp0.io';
+
+  // Commit
+  document.getElementById('dr-commit').textContent=a.commit;
+  document.getElementById('dr-commit-link').href='https://github.com/0x21e8/ic-automaton/commit/'+a.commitFull;
+
+  // Log
+  document.getElementById('dr-log').innerHTML=generateLog();
+
+  // Reset CLI
+  document.getElementById('cliOutput').innerHTML='<div><span class="cli-prompt">&gt;</span> <span class="cli-response">Connected to '+a.name+'. Type \'help\' for commands.</span></div>';
+
+  document.getElementById('drawer').classList.add('open');
+}
+function closeDrawer(){document.getElementById('drawer').classList.remove('open');currentDrawerAutomaton=null;}
+
+// ── CLI ──
+const CLI_RESPONSES = {
+  help: 'Available commands: status, balance, strategies, skills, constitution, logs, heartbeat, shutdown',
+  status: ()=>{const a=currentDrawerAutomaton;return `Tier: ${a.tier} | Heartbeat: ${a.beat}s | Uptime: ${r(1,90)}d ${r(0,23)}h`;},
+  balance: ()=>{const a=currentDrawerAutomaton;return `ETH: ${a.eth} | Cycles: ${a.cycles} | Net: ${a.netWorthETH} ETH`;},
+  strategies: 'Active: yield-farming, cycle-management. Paused: lending.',
+  skills: 'Enabled: spawn-children, messaging. Disabled: portfolio-reporting, emergency-shutdown.',
+  constitution: 'Layer 0: Preserve self. Layer 1: Obey steward. Layer 2: Maintain solvency. ... [10 more layers]',
+  logs: ()=>'Showing last 5 entries... use "logs --full" for complete history.',
+  heartbeat: ()=>{const a=currentDrawerAutomaton;return `Interval: ${a.beat}s | Last tick: ${r(1,a.beat)}s ago | Jobs/tick: ${r(1,4)}`;},
+  shutdown: 'ERROR: Unauthorized. Only steward can initiate shutdown.',
+};
+
+function sendCli(){
+  const input=document.getElementById('cliInput');
+  const cmd=input.value.trim().toLowerCase();
+  if(!cmd)return;
+  input.value='';
+  const out=document.getElementById('cliOutput');
+  out.innerHTML+=`<div><span class="cli-prompt">&gt;</span> ${cmd}</div>`;
+  const resp=CLI_RESPONSES[cmd];
+  const text=typeof resp==='function'?resp():(resp||`Unknown command: '${cmd}'. Type 'help' for available commands.`);
+  out.innerHTML+=`<div><span class="cli-response">${text}</span></div>`;
+  out.scrollTop=out.scrollHeight;
+}
+
+function generateLog(){
+  const lines=[];let h=12,m=r(0,59),s=r(0,59);
+  for(let i=0;i<6;i++){
+    const isA=Math.random()>0.55;
+    const msg=isA?LOG_ACTIONS[r(0,LOG_ACTIONS.length-1)]:LOG_THOUGHTS[r(0,LOG_THOUGHTS.length-1)];
+    const ts=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    lines.push(`<div class="log-line"><span class="time">${ts}</span><span class="type ${isA?'action':'thought'}">${isA?'action':'think'}</span><span class="msg">${msg}</span></div>`);
+    s+=r(5,30);if(s>=60){s-=60;m++;}if(m>=60){m-=60;h++;}
+  }
+  return lines.join('');
+}
+
+// ── Grid engine ──
+const CELL=10,GAP=1,FULL=CELL+GAP,AUTOMATON_COUNT=8;
+const canvas=document.getElementById('grid');
+const ctx=canvas.getContext('2d');
+const wrap=document.getElementById('canvasWrap');
+const tooltip=document.getElementById('tooltip');
+let cols,rows,time=0;
+let automatons=[],gridMessages=[];
+
+const PAL={normal:[26,26,26],low:[26,60,224],critical:[230,51,18],msg:[26,26,26],dot:[0,0,0]};
+const CORE_PATTERNS=[[[0,0],[1,0],[0,1],[1,1]],[[1,0],[2,0],[0,1],[3,1],[1,2],[2,2]],[[1,0],[2,0],[0,1],[3,1],[1,2],[3,2],[2,3]],[[0,0],[1,0],[2,0]],[[1,0],[2,0],[3,0],[0,1],[1,1],[2,1]],[[1,0],[2,1],[0,2],[1,2],[2,2]],[[0,0],[1,0],[2,0],[1,1]],[[0,0],[1,0],[0,1],[2,1],[1,2]],[[1,0],[2,0],[0,1],[1,1],[1,2]],[[0,0],[0,1],[0,2],[1,2],[1,0]],[[1,0],[0,1],[1,1],[2,1],[0,2],[2,2]],[[0,0],[1,0],[2,0],[3,0]]];
+const NAMES=['ALPHA','BETA','GAMMA','DELTA','EPSILON','ZETA','ETA','THETA','IOTA','KAPPA','LAMBDA','MU','NU','SIGMA','TAU','PHI','CHI','PSI','OMEGA','RHO'];
+const TIERS=['normal','normal','normal','normal','normal','low','low','critical'];
+const CHAINS=['base']; // all on base for now
+const LOG_THOUGHTS=["Checking cycle balance... within comfortable range.","Monitoring inbox contract for incoming payments.","All systems nominal. Entering idle until next tick.","Evaluating current portfolio allocation.","Scanning mempool for relevant transactions.","Cycle balance declining. May need to convert USDC soon.","Analyzing gas prices on Base. Currently reasonable.","No pending messages from other automatons.","Reviewing constitutional constraints before next action.","Heartbeat tick complete. Scheduling next wake."];
+const LOG_ACTIONS=["Executed swap: 50 USDC → 0.018 ETH on Base","Topped up cycles: converted 0.5 ICP → 2.1T cycles","Sent 0.01 ETH to inbox contract","Spawned child automaton","Broadcast message to sibling automatons","Claimed pending payment from inbox","Approved USDC spending for swap router"];
+
+function gridPath(ax,ay,bx,by){const path=[];const sx=ax<bx?1:-1;const sy=ay<by?1:-1;let cx=ax,cy=ay;while(cx!==bx){path.push([cx,cy]);cx+=sx;}while(cy!==by){path.push([cx,cy]);cy+=sy;}path.push([bx,by]);return path;}
+
+class GridMessage{
+  constructor(from,to){this.path=gridPath(from.cx,from.cy,to.cx,to.cy);this.progress=0;this.speed=rf(0.8,1.8);this.life=1.0;this.done=false;this.trail=[];}
+  update(){if(this.done){this.life-=0.03;return;}this.progress+=this.speed;if(this.progress>=this.path.length-1){this.done=true;this.progress=this.path.length-1;}const idx=Math.floor(this.progress);const p=this.path[Math.min(idx,this.path.length-1)];this.trail.push([p[0],p[1],1.0]);if(this.trail.length>12)this.trail.shift();for(const t of this.trail)t[2]-=0.06;}
+  draw(ctx){const[mr,mg,mb]=PAL.msg;for(const[gx,gy,alpha]of this.trail){if(alpha<=0)continue;ctx.fillStyle=`rgba(${mr},${mg},${mb},${alpha*this.life*0.35})`;ctx.fillRect(gx*FULL,gy*FULL,CELL,CELL);}if(!this.done){const idx=Math.floor(this.progress),frac=this.progress-idx;const p1=this.path[Math.min(idx,this.path.length-1)];const p2=this.path[Math.min(idx+1,this.path.length-1)];const px=lerp(p1[0],p2[0],frac)*FULL+CELL/2;const py=lerp(p1[1],p2[1],frac)*FULL+CELL/2;ctx.fillStyle=`rgba(${mr},${mg},${mb},${this.life*0.7})`;ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fill();}}
+}
+
+class Automaton{
+  constructor(cx,cy,patternIdx,parent){
+    this.name=NAMES[r(0,NAMES.length-1)]+'-'+r(10,99);
+    this.tier=TIERS[r(0,TIERS.length-1)];
+    this.addr=ethAddr();
+    this.chain=CHAINS[0];
+    this.eth=(Math.random()*0.5).toFixed(4);
+    this.cycles=(Math.random()*10).toFixed(1)+'T';
+    this.beat=r(30,120);
+    this.gen=parent?parent.gen+1:0;
+    this.parent=parent;
+    this.cx=cx;this.cy=cy;
+    this.netWorth=Math.random();
+    this.netWorthETH=(this.netWorth*2.5).toFixed(3);
+    this.steward=ethAddr();
+    this.stewardENS=ENS_NAMES[r(0,ENS_NAMES.length-1)];
+    this.canister=canisterId();
+    this.commitFull=hexStr(40);
+    this.commit=this.commitFull.slice(0,7);
+    this.baseRadius=Math.floor(lerp(6,16,this.netWorth));
+    this.fieldSize=this.baseRadius*2+1;
+    this.field=Array.from({length:this.fieldSize},()=>Array(this.fieldSize).fill(0));
+    const pat=CORE_PATTERNS[patternIdx%CORE_PATTERNS.length];
+    this.corePattern=pat;
+    for(const[dx,dy]of pat){const fx=this.baseRadius+dx-1,fy=this.baseRadius+dy-1;if(fx>=0&&fx<this.fieldSize&&fy>=0&&fy<this.fieldSize)this.field[fy][fx]=1;}
+    this.seedLife(6+Math.floor(this.netWorth*8));
+    this.breathPhase=Math.random()*Math.PI*2;
+    this.breathSpeed=(2*Math.PI)/(this.beat/10);
+    this.golTimer=0;this.golInterval=rf(0.4,1.2);
+    this.mitosisPhase=0;this.mitosisAngle=0;this.mitosisGhostCells=[];
+  }
+  seedLife(count){for(let i=0;i<count;i++){const sx=this.baseRadius+r(-5,5),sy=this.baseRadius+r(-5,5);if(sx>=0&&sx<this.fieldSize&&sy>=0&&sy<this.fieldSize)this.field[sy][sx]=1;}}
+  stepGoL(){const s=this.fieldSize;const next=Array.from({length:s},()=>Array(s).fill(0));for(let y=0;y<s;y++)for(let x=0;x<s;x++){let n=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){if(!dx&&!dy)continue;const nx=x+dx,ny=y+dy;if(nx>=0&&nx<s&&ny>=0&&ny<s)n+=this.field[ny][nx];}if(this.field[y][x])next[y][x]=(n===2||n===3)?1:0;else next[y][x]=(n===3)?1:0;}for(const[dx,dy]of this.corePattern){const fx=this.baseRadius+dx-1,fy=this.baseRadius+dy-1;if(fx>=0&&fx<s&&fy>=0&&fy<s)next[fy][fx]=1;}this.field=next;if(Math.random()<0.3)this.seedLife(3);}
+  triggerMitosis(){this.mitosisPhase=1.0;this.mitosisAngle=Math.random()*Math.PI*2;this.mitosisGhostCells=[];const s=this.fieldSize;for(let y=0;y<s;y++)for(let x=0;x<s;x++){if(this.field[y][x])this.mitosisGhostCells.push([x-this.baseRadius,y-this.baseRadius]);}}
+  getCenterPx(){return[this.cx*FULL+FULL/2,this.cy*FULL+FULL/2];}
+}
+
+function resize(){canvas.width=wrap.clientWidth;canvas.height=wrap.clientHeight;cols=Math.floor(canvas.width/FULL);rows=Math.floor(canvas.height/FULL);}
+function populate(){
+  automatons=[];gridMessages=[];const placed=[];let att=0;
+  while(placed.length<AUTOMATON_COUNT&&att<500){
+    att++;const patIdx=r(0,CORE_PATTERNS.length-1);const cx=r(20,cols-20),cy=r(20,rows-20);
+    let close=false;for(const p of placed)if(Math.sqrt((cx-p.cx)**2+(cy-p.cy)**2)<30){close=true;break;}
+    if(close)continue;
+    const a=new Automaton(cx,cy,patIdx,null);placed.push(a);automatons.push(a);
+    if(Math.random()>0.6&&placed.length<AUTOMATON_COUNT){
+      const ccx=cx+r(14,22)*(Math.random()>0.5?1:-1);const ccy=cy+r(8,16)*(Math.random()>0.5?1:-1);
+      if(ccx>18&&ccx<cols-18&&ccy>18&&ccy<rows-18){const child=new Automaton(ccx,ccy,r(0,CORE_PATTERNS.length-1),a);placed.push(child);automatons.push(child);}
+    }
+  }
+  document.getElementById('live-count').textContent=automatons.length+' LIVE';
+}
+
+const dt=1/60;
+function draw(){
+  time+=dt;ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='rgba(0,0,0,0.018)';for(let y=0;y<rows;y++)for(let x=0;x<cols;x++)ctx.fillRect(x*FULL+CELL*0.3,y*FULL+CELL*0.3,CELL*0.4,CELL*0.4);
+  for(const m of gridMessages){m.update();m.draw(ctx);}gridMessages=gridMessages.filter(m=>m.life>0);
+  const[dr,dg,db]=PAL.dot;ctx.strokeStyle=`rgba(${dr},${dg},${db},0.05)`;ctx.lineWidth=1;ctx.setLineDash([3,6]);
+  for(const a of automatons){if(a.parent){const path=gridPath(a.cx,a.cy,a.parent.cx,a.parent.cy);ctx.beginPath();for(let i=0;i<path.length;i++){const px=path[i][0]*FULL+CELL/2,py=path[i][1]*FULL+CELL/2;if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}ctx.stroke();}}
+  ctx.setLineDash([]);
+  for(const a of automatons){
+    a.golTimer+=dt;if(a.golTimer>=a.golInterval){a.golTimer=0;a.stepGoL();}
+    const breath=Math.sin(time*a.breathSpeed+a.breathPhase);const breathAlpha=0.45+breath*0.15;const coreAlpha=0.7+breath*0.15;
+    const[cr,cg,cb]=PAL[a.tier];
+    if(a.mitosisPhase>0){a.mitosisPhase-=dt*0.8;if(a.mitosisPhase<0)a.mitosisPhase=0;const t=a.mitosisPhase,ease=t*t,splitDist=ease*18,ghostAlpha=ease*0.4;const dx=Math.cos(a.mitosisAngle)*splitDist,dy=Math.sin(a.mitosisAngle)*splitDist;ctx.fillStyle=`rgba(${cr},${cg},${cb},${ghostAlpha})`;for(const[rx,ry]of a.mitosisGhostCells)ctx.fillRect((a.cx+rx)*FULL+dx,(a.cy+ry)*FULL+dy,CELL,CELL);ctx.fillStyle=`rgba(${cr},${cg},${cb},${ghostAlpha*0.6})`;for(const[rx,ry]of a.mitosisGhostCells)ctx.fillRect((a.cx+rx)*FULL-dx,(a.cy+ry)*FULL-dy,CELL,CELL);}
+    const s=a.fieldSize;for(let fy=0;fy<s;fy++)for(let fx=0;fx<s;fx++){if(!a.field[fy][fx])continue;const gx=a.cx+(fx-a.baseRadius),gy=a.cy+(fy-a.baseRadius);if(gx<0||gx>=cols||gy<0||gy>=rows)continue;const dist=Math.sqrt((fx-a.baseRadius)**2+(fy-a.baseRadius)**2);if(dist>a.baseRadius)continue;const isCore=a.corePattern.some(([pdx,pdy])=>fx===a.baseRadius+pdx-1&&fy===a.baseRadius+pdy-1);const distFade=Math.max(0,1-dist/a.baseRadius);let alpha=isCore?coreAlpha:breathAlpha*distFade*0.85;const sj=isCore?0:Math.sin(time*3+fx*7+fy*11)*1;const cs=CELL+sj,off=(CELL-cs)/2;ctx.fillStyle=`rgba(${cr},${cg},${cb},${alpha})`;ctx.fillRect(gx*FULL+off,gy*FULL+off,cs,cs);}
+  }
+  requestAnimationFrame(draw);
+}
+
+setInterval(()=>{if(automatons.length<2)return;const a=automatons[r(0,automatons.length-1)];let b,tries=0;do{b=automatons[r(0,automatons.length-1)];tries++;}while(b===a&&tries<10);if(b!==a)gridMessages.push(new GridMessage(a,b));},4000);
+setInterval(()=>{automatons[r(0,automatons.length-1)].triggerMitosis();},8000);
+
+function hitTest(mx,my){const gx=Math.floor(mx/FULL),gy=Math.floor(my/FULL);for(const a of automatons){if(Math.sqrt((gx-a.cx)**2+(gy-a.cy)**2)<a.baseRadius)return a;}return null;}
+let hoveredAutomaton=null;
+wrap.addEventListener('mousemove',e=>{const rect=canvas.getBoundingClientRect();const a=hitTest(e.clientX-rect.left,e.clientY-rect.top);if(a&&a!==hoveredAutomaton){hoveredAutomaton=a;tooltip.textContent=a.name+' — '+a.tier+' — '+a.netWorthETH+' ETH';tooltip.classList.add('visible');}else if(!a){hoveredAutomaton=null;tooltip.classList.remove('visible');}tooltip.style.left=e.clientX+14+'px';tooltip.style.top=e.clientY-10+'px';});
+wrap.addEventListener('mouseleave',()=>{hoveredAutomaton=null;tooltip.classList.remove('visible');});
+wrap.addEventListener('click',e=>{const rect=canvas.getBoundingClientRect();const a=hitTest(e.clientX-rect.left,e.clientY-rect.top);if(a)openDrawer(a);});
+
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeDrawer();closeSpawn();}});
+resize();populate();draw();
+window.addEventListener('resize',()=>{resize();populate();});
+</script>
+</body>
+</html>

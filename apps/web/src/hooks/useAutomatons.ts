@@ -1,0 +1,92 @@
+import type { AutomatonListResponse } from "@ic-automaton/shared";
+import { useEffect, useState } from "react";
+
+import { fetchAutomatons } from "../api/indexer";
+import { subscribeToRealtimeEvents } from "../api/ws";
+
+interface UseAutomatonsOptions {
+  scope: "all" | "mine";
+  viewerAddress: string | null;
+}
+
+const emptyResponse: AutomatonListResponse = {
+  automatons: [],
+  total: 0,
+  prices: {
+    ethUsd: null
+  }
+};
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown automaton feed error.";
+}
+
+export function useAutomatons({ scope, viewerAddress }: UseAutomatonsOptions) {
+  const [response, setResponse] = useState<AutomatonListResponse>(emptyResponse);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    setIsLoading(true);
+    setError(null);
+
+    void fetchAutomatons({
+      steward: scope === "mine" ? viewerAddress ?? undefined : undefined,
+      signal: controller.signal
+    })
+      .then((nextResponse) => {
+        setResponse(nextResponse);
+      })
+      .catch((nextError: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setResponse(emptyResponse);
+        setError(getErrorMessage(nextError));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [refreshToken, scope, viewerAddress]);
+
+  useEffect(() => {
+    return subscribeToRealtimeEvents(
+      {},
+      {
+        onEvent(event) {
+          switch (event.type) {
+            case "spawn":
+            case "update":
+            case "offline":
+            case "spawn.session.completed":
+              setRefreshToken((current) => current + 1);
+              break;
+            default:
+              break;
+          }
+        }
+      }
+    );
+  }, []);
+
+  return {
+    automatons: response.automatons,
+    total: response.total,
+    ethUsd: response.prices.ethUsd,
+    isLoading,
+    error,
+    refresh() {
+      setRefreshToken((current) => current + 1);
+    }
+  };
+}
