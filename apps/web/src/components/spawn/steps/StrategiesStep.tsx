@@ -34,7 +34,7 @@ export function StrategiesStep({
               }}
               type="button"
             >
-              <span className="spawn-check-mark">{checked ? "X" : ""}</span>
+              <span className="spawn-check-mark">{checked ? "×" : ""}</span>
               <span className="spawn-check-body">
                 <span className="spawn-check-title">{strategy.name}</span>
                 <span className="spawn-check-copy">{strategy.description}</span>

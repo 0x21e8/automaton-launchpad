@@ -18,7 +18,7 @@ export function ChainStep({ value, onChange }: ChainStepProps) {
         networks stay visible so the wizard keeps the locked roadmap shape.
       </p>
 
-      <div className="spawn-card-grid">
+      <div className="spawn-card-grid cols-3">
         {chainOptions.map((option) => {
           const isSelected = option.id === value;
 

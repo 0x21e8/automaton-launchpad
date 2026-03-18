@@ -9,6 +9,9 @@ import { themeTokens } from "../../theme/tokens";
 const CELL_SIZE = 10;
 const CELL_GAP = 1;
 const CELL_FULL = CELL_SIZE + CELL_GAP;
+const BASE_LAYOUT_WIDTH = 880;
+const BASE_LAYOUT_HEIGHT = 520;
+const MAX_LAYOUT_SCALE = 1.15;
 
 interface AutomatonCanvasProps {
   automatons: readonly AutomatonSummary[];
@@ -37,6 +40,13 @@ interface RenderNode {
   cx: number;
   cy: number;
   radiusCells: number;
+}
+
+export function getCanvasLayoutScale(width: number, height: number): number {
+  return Math.min(
+    Math.min(width / BASE_LAYOUT_WIDTH, height / BASE_LAYOUT_HEIGHT),
+    MAX_LAYOUT_SCALE
+  );
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -175,8 +185,11 @@ function buildRenderNodes(
   const gridWidth = Math.max(maxX - minX + 14, 24);
   const gridHeight = Math.max(maxY - minY + 14, 18);
   const scale = Math.min(
-    (width - padding * 2) / (gridWidth * CELL_FULL),
-    (height - padding * 2) / (gridHeight * CELL_FULL)
+    Math.min(
+      (width - padding * 2) / (gridWidth * CELL_FULL),
+      (height - padding * 2) / (gridHeight * CELL_FULL)
+    ),
+    MAX_LAYOUT_SCALE
   );
   const offsetX = (width - gridWidth * CELL_FULL * scale) / 2;
   const offsetY = (height - gridHeight * CELL_FULL * scale) / 2;
@@ -267,6 +280,7 @@ export function AutomatonCanvas({
     const render = (time: number) => {
       const timeSeconds = time / 1000;
       drawingContext.clearRect(0, 0, width, height);
+      const layoutScale = getCanvasLayoutScale(width, height);
 
       drawingContext.fillStyle = themeTokens.colors.gridDot;
       for (let y = 0; y < height; y += CELL_FULL) {
@@ -338,8 +352,10 @@ export function AutomatonCanvas({
         const selected = selectedCanisterId === node.automaton.canisterId;
         const color = getTierColor(node.automaton.tier);
         const pulse = 0.55 + Math.sin(timeSeconds * 2 + node.cx * 0.01) * 0.18;
-        const scale = Math.min(width / 880, height / 520);
-        const radiusPixels = Math.max(node.radiusCells * CELL_FULL * scale, 26);
+        const radiusPixels = Math.max(
+          node.radiusCells * CELL_FULL * layoutScale,
+          26
+        );
 
         nextHitAreas.push({
           canisterId: node.automaton.canisterId,
@@ -364,9 +380,9 @@ export function AutomatonCanvas({
         for (const cell of liveCells) {
           const alpha = cell.isCore ? 0.82 : pulse * 0.72;
           const jitter = cell.isCore ? 0 : Math.sin(timeSeconds * 4 + cell.dx * 2 + cell.dy) * 0.4;
-          const size = CELL_SIZE + jitter;
-          const x = node.cx + cell.dx * CELL_FULL * scale - size / 2;
-          const y = node.cy + cell.dy * CELL_FULL * scale - size / 2;
+          const size = Math.max(2, (CELL_SIZE + jitter) * layoutScale);
+          const x = node.cx + cell.dx * CELL_FULL * layoutScale - size / 2;
+          const y = node.cy + cell.dy * CELL_FULL * layoutScale - size / 2;
 
           drawingContext.fillStyle = hexToRgba(color, alpha);
           drawingContext.fillRect(x, y, size, size);

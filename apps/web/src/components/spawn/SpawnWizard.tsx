@@ -250,7 +250,7 @@ export function SpawnWizard({
           onClick={closeWizard}
           type="button"
         >
-          X
+          &times;
         </button>
 
         <header className="spawn-header">
