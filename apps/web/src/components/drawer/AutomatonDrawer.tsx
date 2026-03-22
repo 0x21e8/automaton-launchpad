@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
-import type { AutomatonDetail } from "../../../../../packages/shared/src/automaton.js";
+import type { AutomatonDetail } from "@ic-automaton/shared";
 import { CommandLinePanel } from "./CommandLinePanel";
 import { MonologuePanel } from "./MonologuePanel";
+import type { WalletSession } from "../../wallet/useWalletSession";
 
 function formatUsd(value: string | null): string {
   if (value === null) {
@@ -44,6 +45,7 @@ interface AutomatonDrawerProps {
   onClose: () => void;
   selectedCanisterId: string | null;
   viewerAddress: string | null;
+  walletSession: WalletSession | null;
 }
 
 function isNotFoundError(errorMessage: string | null): boolean {
@@ -57,7 +59,8 @@ export function AutomatonDrawer({
   isOpen,
   onClose,
   selectedCanisterId,
-  viewerAddress
+  viewerAddress,
+  walletSession
 }: AutomatonDrawerProps) {
   const [copyLabel, setCopyLabel] = useState("COPY");
 
@@ -98,20 +101,6 @@ export function AutomatonDrawer({
         : "Detail load failed"
       : automaton?.name ?? "Select an automaton";
   const tier = automaton?.tier ?? "normal";
-  const accessLabel =
-    automaton === null
-      ? isLoading
-        ? "Resolving inspection access"
-        : errorMessage !== null
-          ? detailMissing
-            ? "The selected automaton is not currently available in the index."
-            : "Inspection data is unavailable until the detail request succeeds."
-          : "Select an indexed automaton to inspect access."
-      : viewerAddress === null
-        ? "Inspection only; wallet detection is not active in this UI"
-        : canExecute
-          ? "Detected wallet matches the recorded steward address. Live writes still happen outside this UI."
-          : "Inspection only; detected wallet does not match the recorded steward address";
   const detailFallbackCopy = isLoading
     ? "Loading the indexed canister snapshot."
     : errorMessage !== null
@@ -274,11 +263,6 @@ export function AutomatonDrawer({
                 </a>
               )}
             </div>
-
-            <div className="detail-field">
-              <div className="lbl">Access</div>
-              <div className="val">{accessLabel}</div>
-            </div>
           </div>
         </div>
 
@@ -296,6 +280,7 @@ export function AutomatonDrawer({
             isLoading={isLoading}
             selectedCanisterId={selectedCanisterId}
             viewerAddress={viewerAddress}
+            walletSession={walletSession}
           />
         </div>
       </div>

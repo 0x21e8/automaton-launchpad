@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { SpawnQuote, SpawnSession, SpawnSessionDetail } from "@ic-automaton/shared";
+import {
+  deriveClaimId,
+  type SpawnQuote,
+  type SpawnSession,
+  type SpawnSessionDetail
+} from "@ic-automaton/shared";
 
 import {
   derivePaymentInstructions,
@@ -9,8 +14,11 @@ import {
 } from "./useSpawnSession";
 
 function createSession(overrides: Partial<SpawnSession> = {}): SpawnSession {
+  const sessionId = overrides.sessionId ?? "session-1";
+
   return {
-    sessionId: "session-1",
+    sessionId,
+    claimId: deriveClaimId(sessionId),
     stewardAddress: "0xabc",
     chain: "base",
     asset: "usdc",
@@ -26,6 +34,8 @@ function createSession(overrides: Partial<SpawnSession> = {}): SpawnSession {
     paymentStatus: "unpaid",
     automatonCanisterId: null,
     automatonEvmAddress: null,
+    releaseTxHash: null,
+    releaseBroadcastAt: null,
     parentId: null,
     childIds: [],
     config: {
@@ -33,9 +43,11 @@ function createSession(overrides: Partial<SpawnSession> = {}): SpawnSession {
       risk: 3,
       strategies: [],
       skills: [],
-      openRouterApiKey: null,
-      model: null,
-      braveSearchApiKey: null
+      provider: {
+        openRouterApiKey: null,
+        model: null,
+        braveSearchApiKey: null
+      }
     },
     createdAt: 1_709_912_345_000,
     updatedAt: 1_709_912_345_000,
@@ -66,7 +78,7 @@ describe("useSpawnSession helpers", () => {
     expect(formatSpawnSessionStateLabel("payment_detected")).toBe("Payment Detected");
   });
 
-  it("prefers escrow payment instructions and falls back to the quote", () => {
+  it("prefers cached payment instructions and falls back to the quote", () => {
     const session = createSession();
     const quote: SpawnQuote = {
       sessionId: session.sessionId,
@@ -80,6 +92,7 @@ describe("useSpawnSession helpers", () => {
       expiresAt: session.expiresAt,
       payment: {
         sessionId: session.sessionId,
+        claimId: session.claimId,
         chain: session.chain,
         asset: session.asset,
         paymentAddress: "0xquote",
@@ -90,28 +103,26 @@ describe("useSpawnSession helpers", () => {
     };
     const detail: SpawnSessionDetail = {
       session,
-      audit: [],
-      escrow: {
+      payment: {
         sessionId: session.sessionId,
-        quoteTermsHash: session.quoteTermsHash,
-        paymentAddress: "0xescrow",
+        claimId: session.claimId,
         chain: session.chain,
         asset: session.asset,
-        requiredGrossAmount: session.grossAmount,
-        paidAmount: "0",
-        paymentStatus: "unpaid",
-        refundable: false,
-        refundedAt: null,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt
+        paymentAddress: "0xdetail",
+        grossAmount: session.grossAmount,
+        quoteTermsHash: session.quoteTermsHash,
+        expiresAt: session.expiresAt
       },
+      audit: [],
       registryRecord: null
     };
 
     expect(derivePaymentInstructions(session, detail, quote)).toMatchObject({
-      paymentAddress: "0xescrow"
+      claimId: session.claimId,
+      paymentAddress: "0xdetail"
     });
     expect(derivePaymentInstructions(session, null, quote)).toMatchObject({
+      claimId: session.claimId,
       paymentAddress: "0xquote"
     });
   });

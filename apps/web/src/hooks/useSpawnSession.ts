@@ -56,8 +56,8 @@ export function describeSpawnSessionProgress(session: SpawnSession): string {
       return "Escrow payment was detected. The factory is preparing the spawn pipeline.";
     case "spawning":
       return "The factory is creating the automaton canister and applying its initial configuration.";
-    case "funding_automaton":
-      return "Spawn succeeded. Net funds are being forwarded to the new automaton address.";
+    case "broadcasting_release":
+      return "Canister install succeeded. The factory is broadcasting the escrow release transaction.";
     case "complete":
       return "Spawn completed and the new automaton should now appear on the grid.";
     case "failed":
@@ -82,9 +82,19 @@ export function derivePaymentInstructions(
     return null;
   }
 
+  const paymentAddress =
+    detail?.payment.paymentAddress ?? quote?.payment.paymentAddress ?? null;
+
+  if (paymentAddress === null) {
+    return null;
+  }
+
   return {
-    paymentAddress: detail?.escrow?.paymentAddress ?? quote?.payment.paymentAddress ?? null,
-    grossAmount: detail?.escrow?.requiredGrossAmount ?? quote?.payment.grossAmount ?? session.grossAmount,
+    sessionId: detail?.payment.sessionId ?? quote?.payment.sessionId ?? session.sessionId,
+    claimId: detail?.payment.claimId ?? quote?.payment.claimId ?? session.claimId,
+    chain: detail?.payment.chain ?? quote?.payment.chain ?? session.chain,
+    paymentAddress,
+    grossAmount: detail?.payment.grossAmount ?? quote?.payment.grossAmount ?? session.grossAmount,
     asset: session.asset,
     quoteTermsHash: session.quoteTermsHash,
     expiresAt: session.expiresAt
@@ -165,12 +175,19 @@ export function useSpawnSession() {
             case "spawn.session.completed":
             case "spawn.session.failed":
             case "spawn.session.expired":
-              setDetail((current) => ({
-                session: event.session,
-                audit: event.audit,
-                escrow: current?.escrow ?? null,
-                registryRecord: current?.registryRecord ?? null
-              }));
+              setDetail((current) => {
+                const payment = current?.payment ?? quote?.payment;
+                if (!payment) {
+                  return current;
+                }
+
+                return {
+                  session: event.session,
+                  payment,
+                  audit: event.audit,
+                  registryRecord: current?.registryRecord ?? null
+                };
+              });
               setProvisionalSession(event.session);
 
               if (event.type !== "spawn.session.updated") {
@@ -183,7 +200,7 @@ export function useSpawnSession() {
         }
       }
     );
-  }, [sessionId]);
+  }, [quote, sessionId]);
 
   return {
     sessionId,

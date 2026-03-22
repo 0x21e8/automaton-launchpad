@@ -17,11 +17,10 @@ describe("spawn-state", () => {
     expect(preview.minimumMet).toBe(true);
   });
 
-  it("rejects gross ETH funding below the $50 minimum", () => {
+  it("rejects gross USDC funding below the $50 minimum", () => {
     const preview = getFundingPreview({
       ...createInitialSpawnWizardState(),
-      asset: "eth",
-      grossAmountInput: "0.01"
+      grossAmountInput: "32"
     });
 
     expect(preview.grossUsd).toBe(32);

@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
-    "test": "vitest run"
+    "dev": "sh ../../scripts/with-repo-node.sh vite --host 127.0.0.1 --port 5173",
+    "lint": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.json --noEmit",
+    "build": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.json --noEmit && sh ../../scripts/with-repo-node.sh vite build",
+    "test": "sh ../../scripts/with-repo-node.sh vitest run"
   },
   "dependencies": {
     "@ic-automaton/shared": "0.1.0",

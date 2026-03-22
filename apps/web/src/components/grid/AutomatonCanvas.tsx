@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AutomatonSummary,
   AutomatonTier
-} from "../../../../../packages/shared/src/automaton.js";
+} from "@ic-automaton/shared";
 import { themeTokens } from "../../theme/tokens";
 
 const CELL_SIZE = 10;

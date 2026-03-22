@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { AutomatonDetail } from "../../../../../packages/shared/src/automaton.js";
+import type { AutomatonDetail } from "@ic-automaton/shared";
 import { AutomatonDrawer } from "./AutomatonDrawer";
 import { CommandLinePanel } from "./CommandLinePanel";
 import { MonologuePanel } from "./MonologuePanel";
@@ -96,6 +96,7 @@ describe("drawer messaging", () => {
         onClose={() => {}}
         selectedCanisterId="txyno-ch777-77776-aaaaq-cai"
         viewerAddress={null}
+        walletSession={null}
       />
     );
 
@@ -113,16 +114,15 @@ describe("drawer messaging", () => {
         onClose={() => {}}
         selectedCanisterId="txyno-ch777-77776-aaaaq-cai"
         viewerAddress={null}
+        walletSession={null}
       />
     );
 
     expect(failureMarkup).toContain("Detail load failed");
-    expect(failureMarkup).toContain(
-      "Inspection data is unavailable until the detail request succeeds."
-    );
+    expect(failureMarkup).toContain("Detail request failed: Request failed with 503.");
   });
 
-  it("renders the command panel as inspection-only reference text", () => {
+  it("renders an interactive command panel with auth guidance", () => {
     const markup = renderToStaticMarkup(
       <CommandLinePanel
         automaton={createAutomatonDetail()}
@@ -131,16 +131,37 @@ describe("drawer messaging", () => {
         isLoading={false}
         selectedCanisterId="txyno-ch777-77776-aaaaq-cai"
         viewerAddress="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        walletSession={null}
       />
     );
 
     expect(markup).toContain("Command Surface");
-    expect(markup).toContain("Inspection only");
-    expect(markup).toContain(
-      "Launchpad does not execute, sign, or broadcast canister commands."
+    expect(markup).toContain("Command Surface ready.");
+    expect(markup).toContain("Type help for commands.");
+    expect(markup).toContain("Interactive terminal");
+    expect(markup).toContain("Terminal command");
+    expect(markup).toContain("SEND");
+    expect(markup).not.toContain("help  Public");
+    expect(markup).not.toContain("Wallet required");
+    expect(markup).not.toContain("Connected wallet is not the steward");
+  });
+
+  it("shows public guidance when no wallet is connected", () => {
+    const markup = renderToStaticMarkup(
+      <CommandLinePanel
+        automaton={null}
+        canExecute={false}
+        errorMessage={null}
+        isLoading={false}
+        selectedCanisterId={null}
+        viewerAddress={null}
+        walletSession={null}
+      />
     );
-    expect(markup).not.toContain("Send");
-    expect(markup).not.toContain("enter command");
+
+    expect(markup).toContain("Interactive terminal");
+    expect(markup).toContain("Connect a wallet to use protected commands.");
+    expect(markup).toContain("Select an automaton to inspect status and logs.");
   });
 
   it("labels empty monologue state as polling-backed indexed history", () => {
@@ -153,9 +174,42 @@ describe("drawer messaging", () => {
       />
     );
 
-    expect(markup).toContain("Polling-backed history");
+    expect(markup).toContain("Live Activity");
+    expect(markup).toContain("Condensed from indexed turns");
+    expect(markup).toContain("Important");
+    expect(markup).toContain("All");
     expect(markup).toContain(
       "No indexed turns yet. Recent activity appears after the next successful poll."
     );
+  });
+
+  it("renders condensed activity headlines and hides raw detail by default", () => {
+    const markup = renderToStaticMarkup(
+      <MonologuePanel
+        entries={[
+          {
+            timestamp: 1_700_000_100_000,
+            turnId: "turn-1",
+            type: "action",
+            headline: "Rebalanced exposure toward the active LP",
+            message: "Rebalancing exposure toward the active LP with a two-step swap.",
+            category: "act",
+            importance: "high",
+            agentState: "Idle -> ExecutingActions",
+            toolCallCount: 2,
+            durationMs: 1240,
+            error: null
+          }
+        ]}
+        errorMessage={null}
+        isLoading={false}
+        selectedCanisterId="txyno-ch777-77776-aaaaq-cai"
+      />
+    );
+
+    expect(markup).toContain("Rebalanced exposure toward the active LP");
+    expect(markup).toContain("2 tools");
+    expect(markup).toContain("Show");
+    expect(markup).not.toContain("with a two-step swap");
   });
 });

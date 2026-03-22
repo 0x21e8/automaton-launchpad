@@ -12,6 +12,12 @@ import {
   type ProviderModelOption
 } from "../../lib/default-models";
 import {
+  executeSpawnPayment,
+  formatSpawnPaymentError,
+  getSpawnPaymentAvailability,
+  type SpawnPaymentExecutionResult
+} from "../../lib/spawn-payment";
+import {
   buildProviderSummary,
   chainOptions,
   createInitialSpawnWizardState,
@@ -26,6 +32,7 @@ import {
   TOTAL_SPAWN_STEPS,
   type SpawnWizardState
 } from "./spawn-state";
+import type { WalletSession } from "../../wallet/useWalletSession";
 import { ChainStep } from "./steps/ChainStep";
 import { FundStep } from "./steps/FundStep";
 import { ProviderConfigStep } from "./steps/ProviderConfigStep";
@@ -37,7 +44,7 @@ interface SpawnWizardProps {
   isOpen: boolean;
   onClose: () => void;
   onSpawned?: (canisterId: string) => void;
-  viewerAddress: string | null;
+  walletSession: WalletSession;
 }
 
 const stepTitles = [
@@ -66,7 +73,7 @@ export function SpawnWizard({
   isOpen,
   onClose,
   onSpawned,
-  viewerAddress
+  walletSession
 }: SpawnWizardProps) {
   const [stepIndex, setStepIndex] = useState(0);
   const [state, setState] = useState<SpawnWizardState>(
@@ -81,7 +88,12 @@ export function SpawnWizard({
   const [modelStatusMessage, setModelStatusMessage] = useState(
     "Using curated fallback models until the live catalog is requested."
   );
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentResult, setPaymentResult] =
+    useState<SpawnPaymentExecutionResult | null>(null);
   const spawnSession = useSpawnSession();
+  const viewerAddress = walletSession.address;
 
   useEffect(() => {
     if (!isOpen) {
@@ -156,6 +168,12 @@ export function SpawnWizard({
     setReportedCompletionSessionId(activeSession.sessionId);
   }, [activeSession, onSpawned, reportedCompletionSessionId]);
 
+  useEffect(() => {
+    setPaymentError(null);
+    setPaymentResult(null);
+    setIsSubmittingPayment(false);
+  }, [spawnSession.sessionId]);
+
   function resetWizard() {
     setStepIndex(0);
     setState(createInitialSpawnWizardState());
@@ -164,6 +182,9 @@ export function SpawnWizard({
       "Using curated fallback models until the live catalog is requested."
     );
     setIsLoadingModels(false);
+    setIsSubmittingPayment(false);
+    setPaymentError(null);
+    setPaymentResult(null);
   }
 
   function closeWizard() {
@@ -203,13 +224,17 @@ export function SpawnWizard({
         risk: state.risk,
         strategies: [...state.strategies],
         skills: [...state.skills],
-        openRouterApiKey:
-          state.openRouterApiKey.trim() === "" ? null : state.openRouterApiKey.trim(),
-        model: getSelectedModel(state),
-        braveSearchApiKey:
-          state.braveSearchApiKey.trim() === ""
-            ? null
-            : state.braveSearchApiKey.trim()
+        provider: {
+          openRouterApiKey:
+            state.openRouterApiKey.trim() === ""
+              ? null
+              : state.openRouterApiKey.trim(),
+          model: getSelectedModel(state),
+          braveSearchApiKey:
+            state.braveSearchApiKey.trim() === ""
+              ? null
+              : state.braveSearchApiKey.trim()
+        }
       }
     };
   }
@@ -226,6 +251,41 @@ export function SpawnWizard({
     }
 
     void spawnSession.create(request);
+  }
+
+  const paymentAvailability = getSpawnPaymentAvailability(
+    activeSession,
+    paymentInstructions,
+    walletSession
+  );
+
+  async function handlePayment() {
+    if (
+      activeSession === null ||
+      paymentInstructions === null ||
+      viewerAddress === null ||
+      !paymentAvailability.canSubmit ||
+      isSubmittingPayment
+    ) {
+      return;
+    }
+
+    setIsSubmittingPayment(true);
+    setPaymentError(null);
+    setPaymentResult(null);
+
+    try {
+      const result = await executeSpawnPayment(
+        paymentInstructions,
+        viewerAddress,
+        walletSession
+      );
+      setPaymentResult(result);
+    } catch (error) {
+      setPaymentError(formatSpawnPaymentError(error));
+    } finally {
+      setIsSubmittingPayment(false);
+    }
   }
 
   return (
@@ -455,6 +515,18 @@ export function SpawnWizard({
               </div>
 
               <div className="spawn-session-actions">
+                {paymentInstructions !== null ? (
+                  <button
+                    className="spawn-nav-button is-primary"
+                    disabled={!paymentAvailability.canSubmit || isSubmittingPayment}
+                    onClick={() => {
+                      void handlePayment();
+                    }}
+                    type="button"
+                  >
+                    {isSubmittingPayment ? "Submitting Payment..." : "Pay With Wallet"}
+                  </button>
+                ) : null}
                 <button
                   className="spawn-nav-button"
                   disabled={!activeSession.retryable || spawnSession.isMutating}
@@ -477,6 +549,13 @@ export function SpawnWizard({
                 </button>
               </div>
 
+              {paymentInstructions !== null ? (
+                <p className="spawn-session-meta">
+                  {paymentAvailability.disabledReason ??
+                    "This submits a USDC approval followed by the escrow deposit transaction from the connected wallet."}
+                </p>
+              ) : null}
+
               <p className="spawn-session-meta">
                 {spawnSession.isCreating
                   ? "Creating factory session reference."
@@ -486,6 +565,19 @@ export function SpawnWizard({
                       ? "Refreshing factory session state from the indexer."
                       : "Factory session data is mirrored here when the indexer reports it."}
               </p>
+
+              {paymentResult !== null ? (
+                <p className="spawn-session-meta">
+                  Payment submitted. Approval tx: {paymentResult.approvalTxHash}. Deposit tx:{" "}
+                  {paymentResult.paymentTxHash}.
+                </p>
+              ) : null}
+
+              {paymentError !== null ? (
+                <p className="spawn-session-error" role="alert">
+                  {paymentError}
+                </p>
+              ) : null}
 
               {spawnSession.error !== null ? (
                 <p className="spawn-session-error" role="alert">

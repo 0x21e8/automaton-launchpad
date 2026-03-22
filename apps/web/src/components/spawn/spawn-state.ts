@@ -249,11 +249,11 @@ function parseGrossAmount(rawValue: string): number {
 }
 
 function assetToUsd(asset: SpawnAsset, amount: number): number {
-  return asset === "eth" ? amount * MOCK_ETH_USD_RATE : amount;
+  return asset === "usdc" ? amount : amount * MOCK_ETH_USD_RATE;
 }
 
 function usdToAsset(asset: SpawnAsset, amountUsd: number): number {
-  return asset === "eth" ? amountUsd / MOCK_ETH_USD_RATE : amountUsd;
+  return asset === "usdc" ? amountUsd : amountUsd / MOCK_ETH_USD_RATE;
 }
 
 function formatUsd(value: number): string {
@@ -267,8 +267,8 @@ function formatUsd(value: number): string {
 
 function formatAsset(asset: SpawnAsset, amount: number): string {
   return `${new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: asset === "eth" ? 4 : 2,
-    maximumFractionDigits: asset === "eth" ? 4 : 2
+    minimumFractionDigits: asset === "usdc" ? 2 : 4,
+    maximumFractionDigits: asset === "usdc" ? 2 : 4
   }).format(amount)} ${asset.toUpperCase()}`;
 }
 

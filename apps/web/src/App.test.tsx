@@ -7,7 +7,8 @@ describe("App", () => {
   it("renders the grid stage, drawer shell, and spawn wizard shell", () => {
     const markup = renderToStaticMarkup(<App />);
 
-    expect(markup).toContain("ic-automaton");
+    expect(markup).toContain("automaton lab");
+    expect(markup).toContain("Self-sovereign AI agents");
     expect(markup).toContain("LIVE");
     expect(markup).toContain("Wallet not detected");
     expect(markup).toContain("Automaton grid");

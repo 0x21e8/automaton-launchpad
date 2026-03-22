@@ -3,13 +3,70 @@ import type {
   MonologueEntry,
   SkillSelection,
   StrategySelection
-} from "../../../../packages/shared/src/automaton.js";
+} from "@ic-automaton/shared";
 
 export const SIMULATED_VIEWER_ADDRESS =
   "0x21e8c7a580a1e67d00000000000000000000d00d";
 
 const BASE_TIME = Date.UTC(2026, 2, 10, 8, 0, 0);
 const BASE_CHAIN_ID = 8453;
+
+function deriveCategory(
+  type: MonologueEntry["type"],
+  message: string,
+  toolCallCount: number
+): MonologueEntry["category"] {
+  if (/\b(warn|notify|message|broadcast|escalat|send|sent)\b/i.test(message)) {
+    return "message";
+  }
+
+  if (toolCallCount > 0 || type === "action") {
+    return "act";
+  }
+
+  if (/\b(plan|decid|evaluat|determin|priorit)\b/i.test(message)) {
+    return "decide";
+  }
+
+  return "observe";
+}
+
+function deriveImportance(
+  category: MonologueEntry["category"],
+  message: string,
+  toolCallCount: number,
+  durationMs: number | null
+): MonologueEntry["importance"] {
+  if (/\b(warn|critical|error|risk|solvency|freeze)\b/i.test(message)) {
+    return "high";
+  }
+
+  if (
+    category === "message" ||
+    (category === "act" && (toolCallCount >= 2 || (durationMs ?? 0) >= 2_500))
+  ) {
+    return "high";
+  }
+
+  if (category === "act" || category === "decide" || (durationMs ?? 0) >= 1_500) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+function deriveHeadline(message: string): string {
+  return message
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?]+$/u, "")
+    .replace(/^reviewing\b/i, "Review")
+    .replace(/^monitoring\b/i, "Monitor")
+    .replace(/^checking\b/i, "Check")
+    .replace(/^rebalancing\b/i, "Rebalance")
+    .replace(/\b(before|after|while|because)\b.*$/iu, "")
+    .trim();
+}
 
 function buildMonologue(
   automatonId: string,
@@ -22,16 +79,28 @@ function buildMonologue(
     agentState: string;
   }>
 ): MonologueEntry[] {
-  return lines.map((line, index) => ({
-    timestamp: BASE_TIME + (offsetMinutes + index * 4) * 60_000,
-    turnId: `${automatonId}-turn-${index + 1}`,
-    type: line.type,
-    message: line.message,
-    agentState: line.agentState,
-    toolCallCount: line.toolCallCount,
-    durationMs: line.durationMs,
-    error: null
-  }));
+  return lines.map((line, index) => {
+    const category = deriveCategory(line.type, line.message, line.toolCallCount);
+
+    return {
+      timestamp: BASE_TIME + (offsetMinutes + index * 4) * 60_000,
+      turnId: `${automatonId}-turn-${index + 1}`,
+      type: line.type,
+      headline: deriveHeadline(line.message),
+      message: line.message,
+      category,
+      importance: deriveImportance(
+        category,
+        line.message,
+        line.toolCallCount,
+        line.durationMs
+      ),
+      agentState: line.agentState,
+      toolCallCount: line.toolCallCount,
+      durationMs: line.durationMs,
+      error: null
+    };
+  });
 }
 
 function strategy(

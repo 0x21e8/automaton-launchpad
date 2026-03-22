@@ -8,6 +8,27 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown automaton detail error.";
 }
 
+function mergeMonologueEntries(
+  existingEntries: ReadonlyArray<AutomatonDetail["monologue"][number]>,
+  nextEntry: AutomatonDetail["monologue"][number]
+) {
+  const byKey = new Map<string, AutomatonDetail["monologue"][number]>();
+
+  for (const entry of existingEntries) {
+    byKey.set(`${entry.timestamp}:${entry.turnId}`, entry);
+  }
+
+  byKey.set(`${nextEntry.timestamp}:${nextEntry.turnId}`, nextEntry);
+
+  return [...byKey.values()].sort((left, right) => {
+    if (left.timestamp === right.timestamp) {
+      return right.turnId.localeCompare(left.turnId);
+    }
+
+    return right.timestamp - left.timestamp;
+  });
+}
+
 export function useAutomatonDetail(canisterId: string | null) {
   const [automaton, setAutomaton] = useState<AutomatonDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -69,7 +90,7 @@ export function useAutomatonDetail(canisterId: string | null) {
 
               return {
                 ...current,
-                monologue: [...current.monologue, event.entry]
+                monologue: mergeMonologueEntries(current.monologue, event.entry)
               };
             });
             return;

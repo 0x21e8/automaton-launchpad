@@ -6,14 +6,11 @@ import { SpawnWizard } from "./components/spawn/SpawnWizard";
 import { useAutomatonDetail } from "./hooks/useAutomatonDetail";
 import { useAutomatons } from "./hooks/useAutomatons";
 import { themeTokens } from "./theme/tokens";
+import { useWalletSession } from "./wallet/useWalletSession";
 
 const navigationItems = ["Spawn", "Strategies", "Skills"] as const;
 
 type ThemeStyle = CSSProperties & Record<`--${string}`, string>;
-
-function truncateAddress(value: string): string {
-  return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
 
 export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -22,7 +19,8 @@ export default function App() {
     null
   );
   const [spawnWizardOpen, setSpawnWizardOpen] = useState(false);
-  const [viewerAddress] = useState<string | null>(null);
+  const wallet = useWalletSession();
+  const viewerAddress = wallet.address;
   const {
     automatons: visibleAutomatons,
     error: automatonFeedError,
@@ -39,9 +37,9 @@ export default function App() {
     isLoading: selectedAutomatonLoading
   } = useAutomatonDetail(selectedCanisterId);
   const walletDetected = viewerAddress !== null;
-  const walletLabel = walletDetected
-    ? `Wallet detected ${truncateAddress(viewerAddress)}`
-    : "Wallet not detected";
+  const walletLabel = wallet.isConnecting
+    ? "CONNECTING..."
+    : wallet.walletLabel;
   const walletClassName = `wallet-button${walletDetected ? " is-connected" : ""}`;
   const stageNotice =
     automatonFeedError !== null
@@ -122,8 +120,8 @@ export default function App() {
     <div className="app-shell" style={themeStyle}>
       <header className="site-header">
         <div className="brand-lockup">
-          <h1 className="brand-wordmark">ic-automaton</h1>
-          <p className="brand-tagline">Self-sovereign AI agents on-chain</p>
+          <h1 className="brand-wordmark">automaton lab</h1>
+          <p className="brand-tagline">Self-sovereign AI agents</p>
         </div>
 
         <button
@@ -161,7 +159,19 @@ export default function App() {
 
           <div className="header-utility">
             <span className="live-pill">{liveCount} LIVE</span>
-            <button className={walletClassName} type="button">
+            <button
+              className={walletClassName}
+              disabled={wallet.isConnecting}
+              onClick={() => {
+                if (wallet.isConnected) {
+                  wallet.disconnect();
+                  return;
+                }
+
+                void wallet.connect();
+              }}
+              type="button"
+            >
               {walletLabel}
             </button>
           </div>
@@ -190,6 +200,7 @@ export default function App() {
         }}
         selectedCanisterId={selectedCanisterId}
         viewerAddress={viewerAddress}
+        walletSession={wallet}
       />
 
       <SpawnWizard
@@ -200,7 +211,7 @@ export default function App() {
         onSpawned={() => {
           refreshAutomatons();
         }}
-        viewerAddress={viewerAddress}
+        walletSession={wallet}
       />
     </div>
   );

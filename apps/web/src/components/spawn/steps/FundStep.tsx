@@ -59,15 +59,6 @@ export function FundStep({
               role="group"
             >
               <button
-                className={`fund-currency${asset === "eth" ? " is-active" : ""}`}
-                onClick={() => {
-                  onAssetChange("eth");
-                }}
-                type="button"
-              >
-                ETH
-              </button>
-              <button
                 className={`fund-currency${asset === "usdc" ? " is-active" : ""}`}
                 onClick={() => {
                   onAssetChange("usdc");
