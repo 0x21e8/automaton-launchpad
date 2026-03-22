@@ -1,0 +1,442 @@
+type AutomatonChildRuntimeConfig = record {
+  ecdsa_key_name : opt text;
+  inbox_contract_address : opt text;
+  evm_chain_id : opt nat64;
+  evm_rpc_url : opt text;
+  evm_confirmation_depth : opt nat64;
+  evm_bootstrap_lookback_blocks : opt nat64;
+  http_allowed_domains : opt vec text;
+  llm_canister_id : opt principal;
+  search_api_key : opt text;
+  cycle_topup_enabled : opt bool;
+  auto_topup_cycle_threshold : opt nat64;
+};
+type CreateSpawnSessionRequest = record {
+  asset : SpawnAsset;
+  parent_id : opt text;
+  config : SpawnConfig;
+  steward_address : text;
+  gross_amount : text;
+};
+type CreateSpawnSessionResponse = record {
+  quote : SpawnQuote;
+  session : SpawnSession;
+};
+type CreationCostQuote = record { updated_at : nat64; usdc_cost : text };
+type EscrowClaim = record {
+  updated_at : nat64;
+  asset : SpawnAsset;
+  session_id : text;
+  claim_id : text;
+  required_gross_amount : text;
+  chain : SpawnChain;
+  quote_terms_hash : text;
+  paid_amount : text;
+  created_at : nat64;
+  payment_status : PaymentStatus;
+  refundable : bool;
+  refunded_at : opt nat64;
+  payment_address : text;
+};
+type FactoryConfigSnapshot = record {
+  escrow_contract_address : text;
+  estimated_outcall_cycles_per_interval : nat64;
+  factory_evm_address : opt text;
+  release_broadcast_config : ReleaseBroadcastConfig;
+  child_runtime : AutomatonChildRuntimeConfig;
+  session_ttl_ms : nat64;
+  cycles_per_spawn : nat64;
+  wasm_sha256 : opt text;
+  version_commit : text;
+  fee_config : FeeConfig;
+  creation_cost_quote : CreationCostQuote;
+  base_rpc_endpoint : opt text;
+  base_rpc_fallback_endpoint : opt text;
+  pause : bool;
+  payment_address : text;
+  min_pool_balance : nat64;
+};
+type FactoryOperationalConfig = record {
+  cycles_per_spawn : nat64;
+  min_pool_balance : nat64;
+  estimated_outcall_cycles_per_interval : nat64;
+};
+type FactoryArtifactSnapshot = record {
+  loaded : bool;
+  wasm_sha256 : opt text;
+  version_commit : opt text;
+  wasm_size_bytes : opt nat64;
+};
+type ArtifactUploadStatus = record {
+  in_progress : bool;
+  expected_sha256 : opt text;
+  version_commit : opt text;
+  total_size_bytes : opt nat64;
+  received_size_bytes : nat64;
+};
+type FactoryHealthSnapshot = record {
+  current_canister_balance : nat;
+  pause : bool;
+  cycles_per_spawn : nat64;
+  min_pool_balance : nat64;
+  estimated_outcall_cycles_per_interval : nat64;
+  escrow_contract_address : text;
+  factory_evm_address : opt text;
+  artifact : FactoryArtifactSnapshot;
+  active_sessions : FactorySessionHealthCounts;
+  scheduler : FactorySchedulerHealthSnapshot;
+};
+type FactoryRuntimeSnapshot = record {
+  scheduler : FactorySchedulerHealthSnapshot;
+  active_jobs : vec SchedulerJob;
+  retry_queue : vec SchedulerJob;
+  recent_jobs : vec SchedulerJob;
+  failed_jobs : vec SchedulerJob;
+};
+type FactorySchedulerHealthSnapshot = record {
+  last_tick_started_ms : opt nat64;
+  last_tick_finished_ms : opt nat64;
+  last_tick_error : opt text;
+  active_job_ids : vec text;
+  job_counts : FactorySchedulerJobCounts;
+  retry_queue_count : nat64;
+};
+type FactorySchedulerJobCounts = record {
+  total : nat64;
+  pending : nat64;
+  running : nat64;
+  completed : nat64;
+  backoff : nat64;
+  skipped : nat64;
+  terminal : nat64;
+  with_last_error : nat64;
+};
+type FactorySessionHealthCounts = record {
+  awaiting_payment : nat64;
+  payment_detected : nat64;
+  spawning : nat64;
+  broadcasting_release : nat64;
+  retryable_failed : nat64;
+};
+type FactoryError = variant {
+  ArtifactHashMismatch : record { expected : text; actual : text };
+  ArtifactUploadIncomplete : record { expected : nat64; received : nat64 };
+  ArtifactUploadTooLarge : record { expected : nat64; attempted : nat64 };
+  NoPendingArtifactUpload;
+  QuoteTermsHashMismatch : record { expected : text; received : text };
+  RegistryRecordNotFound : record { canister_id : text };
+  InvalidAmount : record { value : text };
+  InvalidSha256 : record { value : text };
+  InvalidVersionCommit : record { value : text };
+  UnauthorizedAdmin : record { caller : text };
+  SessionNotRetryable : record { session_id : text; state : SpawnSessionState };
+  ManagementCallFailed : record { method : text; message : text };
+  RpcRequestFailed : record {
+    operation : text;
+    endpoint : text;
+    category : RpcFailureCategory;
+    code : opt int64;
+    message : text;
+  };
+  InsufficientCyclesPool : record { available : nat; required : nat };
+  InsufficientCyclesForOperation : record {
+    operation : text;
+    available : nat;
+    required : nat;
+  };
+  SessionNotFound : record { session_id : text };
+  ControllerInvariantViolation : record { canister_id : text };
+  FactoryPaused : record { pause : bool };
+  UnauthorizedSteward : record { session_id : text; caller : text };
+  PaymentNotSettled : record { status : PaymentStatus; session_id : text };
+  SessionNotRefundable : record {
+    session_id : text;
+    payment_status : PaymentStatus;
+    state : SpawnSessionState;
+  };
+  GrossBelowRequiredMinimum : record { provided : text; required : text };
+  AutomatonRuntimeNotFound : record { canister_id : text };
+  MissingChildRuntimeConfig : record { field : text };
+  InvalidPaginationLimit : record { limit : nat64 };
+  SessionNotReadyForSpawn : record {
+    session_id : text;
+    state : SpawnSessionState;
+  };
+  SessionExpired : record { session_id : text; expires_at : nat64 };
+  EscrowClaimNotFound : record { session_id : text };
+};
+type FactoryInitArgs = record {
+  escrow_contract_address : opt text;
+  release_broadcast_config : opt ReleaseBroadcastConfig;
+  child_runtime : opt AutomatonChildRuntimeConfig;
+  session_ttl_ms : opt nat64;
+  cycles_per_spawn : opt nat64;
+  wasm_sha256 : opt text;
+  version_commit : opt text;
+  fee_config : opt FeeConfig;
+  creation_cost_quote : opt CreationCostQuote;
+  base_rpc_endpoint : opt text;
+  base_rpc_fallback_endpoint : opt text;
+  pause : bool;
+  payment_address : opt text;
+  estimated_outcall_cycles_per_interval : opt nat64;
+  min_pool_balance : opt nat64;
+  admin_principals : vec principal;
+};
+type FeeConfig = record { usdc_fee : text; updated_at : nat64 };
+type PaymentStatus = variant { Refunded; Paid; Unpaid; Partial };
+type ProviderConfig = record {
+  model : opt text;
+  open_router_api_key : opt text;
+  brave_search_api_key : opt text;
+};
+type ReleaseBroadcastConfig = record {
+  chain_id : nat64;
+  max_priority_fee_per_gas : nat64;
+  max_fee_per_gas : nat64;
+  gas_limit : nat64;
+  ecdsa_key_name : text;
+};
+type ReleaseBroadcastFailure = record {
+  stage : ReleaseBroadcastStage;
+  message : text;
+  rpc_category : opt RpcFailureCategory;
+  rpc_code : opt int64;
+  rpc_endpoint : opt text;
+  occurred_at : nat64;
+};
+type ReleaseBroadcastRecord = record {
+  claim_id : text;
+  recipient : text;
+  escrow_contract_address : text;
+  nonce : nat64;
+  chain_id : nat64;
+  max_priority_fee_per_gas : nat64;
+  max_fee_per_gas : nat64;
+  gas_limit : nat64;
+  calldata_hex : text;
+  signing_payload_hash : opt text;
+  signature : opt ReleaseSignatureRecord;
+  raw_transaction_hash : opt text;
+  rpc_tx_hash : opt text;
+  broadcast_at : opt nat64;
+  last_error : opt ReleaseBroadcastFailure;
+};
+type ReleaseBroadcastStage = variant {
+  CalldataEncoding;
+  SigningPayloadConstruction;
+  PublicKeyLookup;
+  Signing;
+  SignatureRecovery;
+  RawTransactionConstruction;
+  RpcBroadcast;
+};
+type ReleaseSignatureRecord = record {
+  y_parity : bool;
+  r : text;
+  s : text;
+};
+type RpcFailureCategory = variant {
+  Transport;
+  MalformedResponse;
+  ResponseTooLarge;
+  RateLimited;
+  Unavailable;
+  Upstream;
+};
+type RefundSpawnResponse = record {
+  session_id : text;
+  payment_status : PaymentStatus;
+  state : SpawnSessionState;
+  refunded_at : nat64;
+};
+type Result = variant { Ok : RefundSpawnResponse; Err : FactoryError };
+type Result_1 = variant { Ok : CreateSpawnSessionResponse; Err : FactoryError };
+type Result_2 = variant { Ok : FactoryConfigSnapshot; Err : FactoryError };
+type Result_3 = variant { Ok : SessionAdminView; Err : FactoryError };
+type Result_4 = variant { Ok : SpawnSessionStatusResponse; Err : FactoryError };
+type Result_5 = variant { Ok : SpawnedAutomatonRecord; Err : FactoryError };
+type Result_6 = variant {
+  Ok : SpawnedAutomatonRegistryPage;
+  Err : FactoryError;
+};
+type Result_7 = variant { Ok : CreationCostQuote; Err : FactoryError };
+type Result_8 = variant { Ok : FeeConfig; Err : FactoryError };
+type Result_9 = variant { Ok : bool; Err : FactoryError };
+type Result_10 = variant { Ok : text; Err : FactoryError };
+type Result_11 = variant { Ok : FactoryArtifactSnapshot; Err : FactoryError };
+type Result_12 = variant { Ok : ReleaseBroadcastConfig; Err : FactoryError };
+type Result_13 = variant { Ok : FactoryRuntimeSnapshot; Err : FactoryError };
+type Result_14 = variant { Ok : ArtifactUploadStatus; Err : FactoryError };
+type Result_15 = variant { Ok : AutomatonChildRuntimeConfig; Err : FactoryError };
+type Result_16 = variant { Ok : FactoryOperationalConfig; Err : FactoryError };
+type SchedulerFailureAction = variant { Retry; Backoff; Skip; Terminal };
+type SchedulerFailureSource = variant {
+  MissingConfig;
+  InvalidConfig;
+  Deterministic;
+  Transient;
+};
+type SchedulerJob = record {
+  job_id : text;
+  kind : SchedulerJobKind;
+  status : SchedulerJobStatus;
+  next_run_at_ms : opt nat64;
+  leased_at_ms : opt nat64;
+  leased_until_ms : opt nat64;
+  last_started_at_ms : opt nat64;
+  last_finished_at_ms : opt nat64;
+  attempt_count : nat32;
+  consecutive_failure_count : nat32;
+  success_count : nat32;
+  last_error : opt SchedulerJobFailure;
+};
+type SchedulerJobFailure = record {
+  action : SchedulerFailureAction;
+  source : SchedulerFailureSource;
+  message : text;
+  occurred_at : nat64;
+};
+type SchedulerJobKind = variant {
+  PaymentPoll;
+  SpawnExecution : record { session_id : text };
+};
+type SchedulerJobStatus = variant {
+  Pending;
+  Running;
+  Completed;
+  Backoff;
+  Skipped;
+  Terminal;
+};
+type SessionAdminView = record {
+  audit : vec SessionAuditEntry;
+  quote : SpawnQuote;
+  quoted_total_amount : text;
+  escrow_claim : EscrowClaim;
+  session : SpawnSession;
+  registry_record : opt SpawnedAutomatonRecord;
+  pause : bool;
+};
+type SessionAuditActor = variant { System; User; Admin };
+type SessionAuditEntry = record {
+  actor : SessionAuditActor;
+  session_id : text;
+  to_state : SpawnSessionState;
+  from_state : opt SpawnSessionState;
+  timestamp : nat64;
+  reason : text;
+};
+type SpawnAsset = variant { Usdc };
+type SpawnChain = variant { Base };
+type SpawnConfig = record {
+  provider : ProviderConfig;
+  chain : SpawnChain;
+  risk : nat8;
+  skills : vec text;
+  strategies : vec text;
+};
+type SpawnPaymentInstructions = record {
+  asset : SpawnAsset;
+  session_id : text;
+  claim_id : text;
+  chain : SpawnChain;
+  quote_terms_hash : text;
+  payment_address : text;
+  expires_at : nat64;
+  gross_amount : text;
+};
+type SpawnQuote = record {
+  asset : SpawnAsset;
+  session_id : text;
+  chain : SpawnChain;
+  quote_terms_hash : text;
+  net_forward_amount : text;
+  expires_at : nat64;
+  payment : SpawnPaymentInstructions;
+  gross_amount : text;
+  creation_cost : text;
+  platform_fee : text;
+};
+type SpawnSession = record {
+  updated_at : nat64;
+  asset : SpawnAsset;
+  session_id : text;
+  claim_id : text;
+  chain : SpawnChain;
+  quote_terms_hash : text;
+  created_at : nat64;
+  payment_status : PaymentStatus;
+  refundable : bool;
+  parent_id : opt text;
+  net_forward_amount : text;
+  state : SpawnSessionState;
+  automaton_evm_address : opt text;
+  release_broadcast_at : opt nat64;
+  release_broadcast : opt ReleaseBroadcastRecord;
+  automaton_canister_id : opt text;
+  config : SpawnConfig;
+  retryable : bool;
+  expires_at : nat64;
+  child_ids : vec text;
+  steward_address : text;
+  gross_amount : text;
+  release_tx_hash : opt text;
+  creation_cost : text;
+  platform_fee : text;
+};
+type SpawnSessionState = variant {
+  Failed;
+  BroadcastingRelease;
+  Spawning;
+  Complete;
+  AwaitingPayment;
+  PaymentDetected;
+  Expired;
+};
+type SpawnSessionStatusResponse = record {
+  audit : vec SessionAuditEntry;
+  payment : SpawnPaymentInstructions;
+  session : SpawnSession;
+};
+type SpawnedAutomatonRecord = record {
+  evm_address : text;
+  session_id : text;
+  chain : SpawnChain;
+  canister_id : text;
+  created_at : nat64;
+  parent_id : opt text;
+  // Exact installed ic-automaton git commit as a 40-char lowercase SHA.
+  version_commit : text;
+  child_ids : vec text;
+  steward_address : text;
+};
+type SpawnedAutomatonRegistryPage = record {
+  next_cursor : opt text;
+  items : vec SpawnedAutomatonRecord;
+};
+service : (opt FactoryInitArgs) -> {
+  append_artifact_chunk : (vec nat8) -> (Result_14);
+  begin_artifact_upload : (text, text, nat64) -> (Result_14);
+  claim_spawn_refund : (text) -> (Result);
+  commit_artifact_upload : () -> (Result_11);
+  create_spawn_session : (CreateSpawnSessionRequest) -> (Result_1);
+  derive_factory_evm_address : () -> (Result_10);
+  get_artifact_upload_status : () -> (Result_14) query;
+  get_factory_config : () -> (Result_2) query;
+  get_factory_health : () -> (FactoryHealthSnapshot) query;
+  get_factory_runtime : (nat64) -> (Result_13) query;
+  get_session_admin : (text) -> (Result_3) query;
+  get_spawn_session : (text) -> (Result_4) query;
+  get_spawned_automaton : (text) -> (Result_5) query;
+  list_spawned_automatons : (opt text, nat64) -> (Result_6) query;
+  retry_session_admin : (text) -> (Result_4);
+  retry_spawn_session : (text) -> (Result_4);
+  set_child_runtime_config : (AutomatonChildRuntimeConfig) -> (Result_15);
+  set_creation_cost_quote : (CreationCostQuote) -> (Result_7);
+  set_fee_config : (FeeConfig) -> (Result_8);
+  set_operational_config : (FactoryOperationalConfig) -> (Result_16);
+  set_pause : (bool) -> (Result_9);
+  set_release_broadcast_config : (ReleaseBroadcastConfig) -> (Result_12);
+  update_artifact : (vec nat8, text, text) -> (Result_11);
+}

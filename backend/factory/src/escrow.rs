@@ -1,5 +1,15 @@
-use crate::controllers::complete_controller_handoff;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::base_rpc::{
+    configured_rpc_endpoints, BaseDepositLog, PaymentScanPlan, BASE_LOG_WINDOW_LIMIT,
+};
 use crate::expiry::expire_session_in_state;
+use crate::scheduler::{
+    enqueue_spawn_execution_in_state, session_needs_payment_poll, sync_payment_poll_job_in_state,
+};
+use crate::session_transitions::{
+    apply_session_event_in_state, sync_session_derived_flags_in_state, SpawnSessionEvent,
+};
 use crate::state::{
     clear_provider_secrets, read_state, record_session_audit, write_state, FactoryState,
 };
@@ -9,28 +19,28 @@ use crate::types::{
 };
 
 pub fn register_escrow_claim(session: &SpawnSession, now_ms: u64) -> EscrowClaim {
-    let claim = EscrowClaim {
-        session_id: session.session_id.clone(),
-        quote_terms_hash: session.quote_terms_hash.clone(),
-        payment_address: session.payment.payment_address.clone(),
-        chain: session.chain.clone(),
-        asset: session.asset.clone(),
-        required_gross_amount: session.gross_amount.clone(),
-        paid_amount: "0".to_string(),
-        payment_status: PaymentStatus::Unpaid,
-        refundable: false,
-        refunded_at: None,
-        created_at: now_ms,
-        updated_at: now_ms,
-    };
-
     write_state(|state| {
+        let claim = EscrowClaim {
+            session_id: session.session_id.clone(),
+            claim_id: session.claim_id.clone(),
+            quote_terms_hash: session.quote_terms_hash.clone(),
+            payment_address: state.payment_address.clone(),
+            chain: session.chain.clone(),
+            asset: session.asset.clone(),
+            required_gross_amount: session.gross_amount.clone(),
+            paid_amount: "0".to_string(),
+            payment_status: PaymentStatus::Unpaid,
+            last_scanned_block: session.last_scanned_block,
+            refundable: false,
+            refunded_at: None,
+            created_at: now_ms,
+            updated_at: now_ms,
+        };
         state
             .escrow_claims
             .insert(session.session_id.clone(), claim.clone());
-    });
-
-    claim
+        claim
+    })
 }
 
 pub fn get_escrow_claim(session_id: &str) -> Result<EscrowClaim, FactoryError> {
@@ -43,107 +53,242 @@ pub fn get_escrow_claim(session_id: &str) -> Result<EscrowClaim, FactoryError> {
     })
 }
 
-pub fn record_escrow_payment(
-    session_id: &str,
-    quote_terms_hash: &str,
-    paid_amount: &str,
+fn payment_status_for_amount(total_paid: u128, required: u128) -> PaymentStatus {
+    if total_paid >= required {
+        PaymentStatus::Paid
+    } else if total_paid > 0 {
+        PaymentStatus::Partial
+    } else {
+        PaymentStatus::Unpaid
+    }
+}
+pub fn reconcile_escrow_payments(
+    logs: &[BaseDepositLog],
+    scan_to_block: u64,
     now_ms: u64,
-) -> Result<EscrowClaim, FactoryError> {
-    let paid_amount_value = parse_amount(paid_amount)?;
+) -> Result<Vec<EscrowClaim>, FactoryError> {
+    let mut amounts_by_claim: BTreeMap<String, (u128, u64)> = BTreeMap::new();
+    for log in logs {
+        let amount = parse_amount(&log.amount)?;
+        let entry = amounts_by_claim
+            .entry(log.claim_id.clone())
+            .or_insert((0, log.block_number));
+        entry.0 = entry
+            .0
+            .checked_add(amount)
+            .ok_or_else(|| FactoryError::InvalidAmount {
+                value: log.amount.clone(),
+            })?;
+        entry.1 = entry.1.max(log.block_number);
+    }
 
     write_state(|state| {
-        let (expected_quote_terms_hash, required_gross_amount, expires_at, previous_state) =
-            {
-                let session = state.sessions.get(session_id).ok_or_else(|| {
-                    FactoryError::SessionNotFound {
-                        session_id: session_id.to_string(),
-                    }
-                })?;
-                (
-                    session.quote_terms_hash.clone(),
-                    parse_amount(&session.gross_amount)?,
-                    session.expires_at,
-                    session.state.clone(),
-                )
-            };
+        state.payment_last_scanned_block = Some(scan_to_block);
 
-        if expected_quote_terms_hash != quote_terms_hash {
-            return Err(FactoryError::QuoteTermsHashMismatch {
-                expected: expected_quote_terms_hash,
-                received: quote_terms_hash.to_string(),
-            });
-        }
+        let active_session_ids: Vec<String> = state
+            .sessions
+            .iter()
+            .filter(|(_, session)| session_needs_payment_poll(session))
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
 
-        if now_ms > expires_at {
-            let _ = expire_session_in_state(
-                state,
-                session_id,
-                SessionAuditActor::System,
-                now_ms,
-                "payment synchronized after expiration",
-            )?;
-            return Err(FactoryError::SessionExpired {
-                session_id: session_id.to_string(),
-                expires_at,
-            });
-        }
+        let mut updated_claims = Vec::new();
 
-        let payment_status = if paid_amount_value >= required_gross_amount {
-            PaymentStatus::Paid
-        } else if paid_amount_value > 0 {
-            PaymentStatus::Partial
-        } else {
-            PaymentStatus::Unpaid
-        };
-
-        {
-            let claim = state.escrow_claims.get_mut(session_id).ok_or_else(|| {
-                FactoryError::EscrowClaimNotFound {
-                    session_id: session_id.to_string(),
+        for session_id in active_session_ids {
+            let session_snapshot = state.sessions.get(&session_id).cloned().ok_or_else(|| {
+                FactoryError::SessionNotFound {
+                    session_id: session_id.clone(),
                 }
             })?;
-            claim.paid_amount = amount_to_string(paid_amount_value);
-            claim.payment_status = payment_status.clone();
-            claim.refundable = false;
-            claim.updated_at = now_ms;
-        }
 
-        let session =
-            state
-                .sessions
-                .get_mut(session_id)
-                .ok_or_else(|| FactoryError::SessionNotFound {
-                    session_id: session_id.to_string(),
+            let prior_claim = state.escrow_claims.get(&session_id).ok_or_else(|| {
+                FactoryError::EscrowClaimNotFound {
+                    session_id: session_id.clone(),
+                }
+            })?;
+            let mut total_paid = parse_amount(&prior_claim.paid_amount)?;
+            let mut claim_cursor = prior_claim.last_scanned_block;
+
+            if let Some((incremental_amount, block_number)) =
+                amounts_by_claim.get(&session_snapshot.claim_id)
+            {
+                total_paid = total_paid.checked_add(*incremental_amount).ok_or_else(|| {
+                    FactoryError::InvalidAmount {
+                        value: incremental_amount.to_string(),
+                    }
                 })?;
-        session.payment_status = payment_status.clone();
-        session.refundable = false;
-        session.updated_at = now_ms;
+                claim_cursor = Some(claim_cursor.unwrap_or(0).max(*block_number));
+            }
 
-        let target_state = if paid_amount_value >= required_gross_amount {
-            SpawnSessionState::PaymentDetected
-        } else {
-            SpawnSessionState::AwaitingPayment
-        };
-
-        if session.state != target_state {
-            session.state = target_state.clone();
-            record_session_audit(
-                state,
-                session_id,
-                Some(previous_state),
-                target_state,
-                SessionAuditActor::Escrow,
-                now_ms,
-                "escrow payment synchronized",
+            let payment_status = payment_status_for_amount(
+                total_paid,
+                parse_amount(&session_snapshot.gross_amount)?,
             );
+            let payment_detected = session_snapshot.state == SpawnSessionState::AwaitingPayment
+                && payment_status == PaymentStatus::Paid
+                && now_ms <= session_snapshot.expires_at;
+
+            {
+                let claim = state.escrow_claims.get_mut(&session_id).ok_or_else(|| {
+                    FactoryError::EscrowClaimNotFound {
+                        session_id: session_id.clone(),
+                    }
+                })?;
+                claim.paid_amount = amount_to_string(total_paid);
+                claim.payment_status = payment_status.clone();
+                claim.last_scanned_block = Some(scan_to_block.max(claim_cursor.unwrap_or(0)));
+                claim.updated_at = now_ms;
+            }
+
+            {
+                let session = state.sessions.get_mut(&session_id).ok_or_else(|| {
+                    FactoryError::SessionNotFound {
+                        session_id: session_id.clone(),
+                    }
+                })?;
+                session.payment_status = payment_status.clone();
+                session.last_scanned_block = Some(scan_to_block.max(claim_cursor.unwrap_or(0)));
+                session.updated_at = now_ms;
+            }
+            sync_session_derived_flags_in_state(state, &session_id, now_ms)?;
+
+            if payment_detected {
+                apply_session_event_in_state(
+                    state,
+                    &session_id,
+                    SessionAuditActor::System,
+                    now_ms,
+                    SpawnSessionEvent::PaymentObserved,
+                    "payment detected from Base logs",
+                )?;
+                enqueue_spawn_execution_in_state(state, &session_id, now_ms);
+            }
+
+            if now_ms > session_snapshot.expires_at {
+                let _ = expire_session_in_state(
+                    state,
+                    &session_id,
+                    SessionAuditActor::System,
+                    now_ms,
+                    "payment scan observed expired session",
+                )?;
+            }
+
+            updated_claims.push(state.escrow_claims.get(&session_id).cloned().ok_or_else(
+                || FactoryError::EscrowClaimNotFound {
+                    session_id: session_id.clone(),
+                },
+            )?);
         }
 
-        state.escrow_claims.get(session_id).cloned().ok_or_else(|| {
-            FactoryError::EscrowClaimNotFound {
-                session_id: session_id.to_string(),
-            }
+        sync_payment_poll_job_in_state(state, now_ms);
+
+        Ok(updated_claims)
+    })
+}
+
+pub fn next_payment_scan_plan(latest_block: u64) -> Option<PaymentScanPlan> {
+    read_state(|state| {
+        let active_sessions: Vec<&SpawnSession> = state
+            .sessions
+            .values()
+            .filter(|session| session_needs_payment_poll(session))
+            .collect();
+
+        if active_sessions.is_empty() {
+            return None;
+        }
+
+        let fallback_from_block = latest_block.saturating_sub(BASE_LOG_WINDOW_LIMIT - 1);
+        let from_block = active_sessions
+            .iter()
+            .filter_map(|session| {
+                session
+                    .last_scanned_block
+                    .map(|block| block.saturating_add(1))
+            })
+            .min()
+            .or_else(|| {
+                state
+                    .payment_last_scanned_block
+                    .map(|block| block.saturating_add(1))
+            })
+            .unwrap_or(fallback_from_block);
+        let from_block = from_block.min(latest_block);
+        let to_block = from_block
+            .saturating_add(BASE_LOG_WINDOW_LIMIT - 1)
+            .min(latest_block);
+        let claim_ids = active_sessions
+            .iter()
+            .map(|session| session.claim_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        Some(PaymentScanPlan {
+            claim_ids,
+            from_block,
+            to_block,
         })
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn poll_escrow_payments(now_ms: u64) -> Result<Vec<EscrowClaim>, FactoryError> {
+    let (base_rpc_endpoint, base_rpc_fallback_endpoint, escrow_contract_address) =
+        read_state(|state| {
+            (
+                state.base_rpc_endpoint.clone(),
+                state.base_rpc_fallback_endpoint.clone(),
+                state.escrow_contract_address.clone(),
+            )
+        });
+
+    let endpoints = configured_rpc_endpoints(base_rpc_endpoint, base_rpc_fallback_endpoint);
+    if endpoints.is_empty() {
+        return Ok(Vec::new());
+    }
+    if escrow_contract_address.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let latest_block = crate::base_rpc::eth_block_number(&endpoints).await?;
+    let Some(plan) = next_payment_scan_plan(latest_block) else {
+        return Ok(Vec::new());
+    };
+    let logs = crate::base_rpc::eth_get_deposited_logs(&endpoints, &escrow_contract_address, &plan)
+        .await?;
+
+    reconcile_escrow_payments(&logs, plan.to_block, now_ms)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn poll_escrow_payments(now_ms: u64) -> Result<Vec<EscrowClaim>, FactoryError> {
+    let (base_rpc_endpoint, base_rpc_fallback_endpoint, escrow_contract_address) =
+        read_state(|state| {
+            (
+                state.base_rpc_endpoint.clone(),
+                state.base_rpc_fallback_endpoint.clone(),
+                state.escrow_contract_address.clone(),
+            )
+        });
+
+    let endpoints = configured_rpc_endpoints(base_rpc_endpoint, base_rpc_fallback_endpoint);
+    if endpoints.is_empty() {
+        return Ok(Vec::new());
+    }
+    if escrow_contract_address.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let latest_block = crate::base_rpc::eth_block_number(&endpoints)?;
+    let Some(plan) = next_payment_scan_plan(latest_block) else {
+        return Ok(Vec::new());
+    };
+    let logs =
+        crate::base_rpc::eth_get_deposited_logs(&endpoints, &escrow_contract_address, &plan)?;
+
+    reconcile_escrow_payments(&logs, plan.to_block, now_ms)
 }
 
 pub(crate) fn claim_escrow_refund_in_state(
@@ -203,12 +348,8 @@ pub(crate) fn claim_escrow_refund_in_state(
                 canister_id: canister_id.clone(),
             }
         })?;
-        if runtime
-            .controllers
-            .iter()
-            .any(|controller| controller == "factory")
-        {
-            complete_controller_handoff(runtime, "factory")?;
+        if runtime.controller_handoff_completed_at.is_none() {
+            runtime.controller_handoff_completed_at = Some(now_ms);
         }
         runtime.provider_keys_cleared = true;
     }
@@ -219,8 +360,6 @@ pub(crate) fn claim_escrow_refund_in_state(
             .get_mut(session_id)
             .expect("session existence checked");
         clear_provider_secrets(session, None);
-        session.retryable = false;
-        session.refundable = false;
         session.payment_status = PaymentStatus::Refunded;
         session.updated_at = now_ms;
     }
@@ -231,17 +370,17 @@ pub(crate) fn claim_escrow_refund_in_state(
             .get_mut(session_id)
             .expect("claim existence checked");
         claim.payment_status = PaymentStatus::Refunded;
-        claim.refundable = false;
         claim.refunded_at = Some(now_ms);
         claim.updated_at = now_ms;
     }
+    let _ = sync_session_derived_flags_in_state(state, session_id, now_ms)?;
 
     record_session_audit(
         state,
         session_id,
         Some(SpawnSessionState::Expired),
         SpawnSessionState::Expired,
-        SessionAuditActor::Escrow,
+        SessionAuditActor::User,
         now_ms,
         "refund claimed after expiration",
     );

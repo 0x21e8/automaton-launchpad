@@ -1,23 +1,388 @@
-use crate::controllers::complete_controller_handoff;
+use crate::base_rpc::configured_rpc_endpoints;
+#[cfg(target_arch = "wasm32")]
+use crate::controllers::complete_controller_handoff_live;
+#[cfg(target_arch = "wasm32")]
+use crate::controllers::rejection_message;
+use crate::cycles::ensure_spawn_creation_cycles;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::evm::derive_child_evm_address_for_key_name;
+#[cfg(target_arch = "wasm32")]
+use crate::evm::derive_child_evm_address;
 use crate::expiry::expire_spawn_session;
-use crate::init::initialize_automaton;
+#[cfg(target_arch = "wasm32")]
+use crate::init::build_automaton_install_args;
+use crate::init::{initialize_automaton, validate_automaton_child_runtime_config};
 use crate::retry::mark_session_failed_in_state;
-use crate::state::{clear_provider_secrets, read_state, record_session_audit, write_state};
+use crate::session_transitions::{apply_session_event_in_state, SpawnSessionEvent};
+use crate::state::{clear_provider_secrets, read_state, write_state, FactoryState};
 use crate::types::{
-    amount_to_string, parse_amount, FactoryError, PaymentStatus, SessionAuditActor,
-    SpawnExecutionReceipt, SpawnSessionState, SpawnedAutomatonRecord,
+    amount_to_string, parse_amount, AutomatonBootstrapEvidence, AutomatonBootstrapVerification,
+    AutomatonRuntimeState, CONTROLLER_FIELD, FactoryError, PaymentStatus, ReleaseBroadcastRecord,
+    SessionAuditActor, SpawnExecutionReceipt, SpawnSession, SpawnSessionState,
+    SpawnedAutomatonRecord,
 };
 
+#[cfg(target_arch = "wasm32")]
+use crate::now_ms as current_time_ms;
+
+fn normalize_bootstrap_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect()
+}
+
+fn same_evm_address(expected: &str, observed: Option<&str>) -> bool {
+    observed.is_some_and(|value| expected.eq_ignore_ascii_case(value))
+}
+
+fn build_bootstrap_verification(
+    session: &SpawnSession,
+    expected_chain_id: u64,
+    expected_version_commit: &str,
+    expected_evm_address: &str,
+    evidence: AutomatonBootstrapEvidence,
+    checked_at: u64,
+) -> AutomatonBootstrapVerification {
+    let expected_strategies = normalize_bootstrap_list(&session.config.strategies);
+    let expected_skills = normalize_bootstrap_list(&session.config.skills);
+    let mut failures = Vec::new();
+
+    if evidence.bootstrap_session_id.as_deref() != Some(session.session_id.as_str()) {
+        failures.push(format!(
+            "session_id mismatch: expected={}, observed={}",
+            session.session_id,
+            evidence
+                .bootstrap_session_id
+                .as_deref()
+                .unwrap_or("<missing>")
+        ));
+    }
+    if evidence.bootstrap_parent_id != session.parent_id {
+        failures.push(format!(
+            "parent_id mismatch: expected={}, observed={}",
+            session.parent_id.as_deref().unwrap_or("<none>"),
+            evidence.bootstrap_parent_id.as_deref().unwrap_or("<none>")
+        ));
+    }
+    if evidence.bootstrap_risk != Some(session.config.risk) {
+        failures.push(format!(
+            "risk mismatch: expected={}, observed={}",
+            session.config.risk,
+            evidence
+                .bootstrap_risk
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<missing>".to_string())
+        ));
+    }
+    if evidence.bootstrap_strategies != expected_strategies {
+        failures.push(format!(
+            "strategies mismatch: expected={expected_strategies:?}, observed={:?}",
+            evidence.bootstrap_strategies
+        ));
+    }
+    if evidence.bootstrap_skills != expected_skills {
+        failures.push(format!(
+            "skills mismatch: expected={expected_skills:?}, observed={:?}",
+            evidence.bootstrap_skills
+        ));
+    }
+    if evidence.bootstrap_version_commit.as_deref() != Some(expected_version_commit) {
+        failures.push(format!(
+            "version_commit mismatch: expected={expected_version_commit}, observed={}",
+            evidence
+                .bootstrap_version_commit
+                .as_deref()
+                .unwrap_or("<missing>")
+        ));
+    }
+    if !same_evm_address(&session.steward_address, evidence.steward_address.as_deref()) {
+        failures.push(format!(
+            "steward_address mismatch: expected={}, observed={}",
+            session.steward_address,
+            evidence.steward_address.as_deref().unwrap_or("<missing>")
+        ));
+    }
+    if evidence.steward_chain_id != Some(expected_chain_id) {
+        failures.push(format!(
+            "steward_chain_id mismatch: expected={}, observed={}",
+            expected_chain_id,
+            evidence
+                .steward_chain_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<missing>".to_string())
+        ));
+    }
+    if evidence.steward_enabled != Some(true) {
+        failures.push(format!(
+            "steward_enabled mismatch: expected=true, observed={}",
+            evidence
+                .steward_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<missing>".to_string())
+        ));
+    }
+    if !same_evm_address(expected_evm_address, evidence.evm_address.as_deref()) {
+        failures.push(format!(
+            "evm_address mismatch: expected={expected_evm_address}, observed={}",
+            evidence.evm_address.as_deref().unwrap_or("<missing>")
+        ));
+    }
+
+    AutomatonBootstrapVerification {
+        checked_at,
+        passed: failures.is_empty(),
+        evidence,
+        failures,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_spawned_automaton_bootstrap_sync(
+    session: &SpawnSession,
+    runtime: &AutomatonRuntimeState,
+    expected_chain_id: u64,
+    expected_version_commit: &str,
+    checked_at: u64,
+) -> AutomatonBootstrapVerification {
+    // The sync path runs in unit tests without a real child canister, so it mirrors the
+    // installed child views using the runtime/session data that would back those queries.
+    build_bootstrap_verification(
+        session,
+        expected_chain_id,
+        expected_version_commit,
+        &runtime.evm_address,
+        AutomatonBootstrapEvidence {
+            bootstrap_session_id: Some(runtime.session_id.clone()),
+            bootstrap_parent_id: session.parent_id.clone(),
+            bootstrap_risk: Some(runtime.risk),
+            bootstrap_strategies: normalize_bootstrap_list(&runtime.strategies),
+            bootstrap_skills: normalize_bootstrap_list(&runtime.skills),
+            bootstrap_version_commit: Some(expected_version_commit.to_string()),
+            steward_address: Some(runtime.steward_address.clone()),
+            steward_chain_id: Some(expected_chain_id),
+            steward_enabled: Some(true),
+            evm_address: Some(runtime.evm_address.clone()),
+        },
+        checked_at,
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, candid::CandidType, serde::Deserialize)]
+struct ChildSpawnBootstrapView {
+    session_id: Option<String>,
+    parent_id: Option<String>,
+    risk: Option<u8>,
+    strategies: Vec<String>,
+    skills: Vec<String>,
+    version_commit: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, candid::CandidType, serde::Deserialize)]
+struct ChildStewardState {
+    chain_id: u64,
+    address: String,
+    enabled: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, candid::CandidType, serde::Deserialize)]
+struct ChildStewardStatusView {
+    active_steward: Option<ChildStewardState>,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_spawned_automaton_bootstrap_evidence(
+    canister_id: &str,
+) -> Result<AutomatonBootstrapEvidence, FactoryError> {
+    use candid::Principal;
+
+    let principal =
+        Principal::from_text(canister_id).map_err(|error| FactoryError::ManagementCallFailed {
+            method: "parse_canister_id".to_string(),
+            message: error.to_string(),
+        })?;
+    let (bootstrap_view,): (ChildSpawnBootstrapView,) =
+        ic_cdk::call(principal, "get_spawn_bootstrap_view", ())
+            .await
+            .map_err(|error| FactoryError::ManagementCallFailed {
+                method: "get_spawn_bootstrap_view".to_string(),
+                message: rejection_message(error),
+            })?;
+    let (steward_status,): (ChildStewardStatusView,) =
+        ic_cdk::call(principal, "get_steward_status", ())
+            .await
+            .map_err(|error| FactoryError::ManagementCallFailed {
+                method: "get_steward_status".to_string(),
+                message: rejection_message(error),
+            })?;
+    let (mut evm_address,): (Option<String>,) =
+        ic_cdk::call(principal, "get_automaton_evm_address", ())
+            .await
+            .map_err(|error| FactoryError::ManagementCallFailed {
+                method: "get_automaton_evm_address".to_string(),
+                message: rejection_message(error),
+            })?;
+    if evm_address.is_none() {
+        let (derived_address,): (String,) = ic_cdk::call(principal, "derive_automaton_evm_address", ())
+            .await
+            .map_err(|error| FactoryError::ManagementCallFailed {
+                method: "derive_automaton_evm_address".to_string(),
+                message: rejection_message(error),
+            })?;
+        evm_address = Some(derived_address);
+    }
+
+    Ok(AutomatonBootstrapEvidence {
+        bootstrap_session_id: bootstrap_view.session_id,
+        bootstrap_parent_id: bootstrap_view.parent_id,
+        bootstrap_risk: bootstrap_view.risk,
+        bootstrap_strategies: normalize_bootstrap_list(&bootstrap_view.strategies),
+        bootstrap_skills: normalize_bootstrap_list(&bootstrap_view.skills),
+        bootstrap_version_commit: bootstrap_view.version_commit,
+        steward_address: steward_status
+            .active_steward
+            .as_ref()
+            .map(|steward| steward.address.clone()),
+        steward_chain_id: steward_status
+            .active_steward
+            .as_ref()
+            .map(|steward| steward.chain_id),
+        steward_enabled: steward_status
+            .active_steward
+            .as_ref()
+            .map(|steward| steward.enabled),
+        evm_address,
+    })
+}
+
+fn bootstrap_verification_error(
+    canister_id: &str,
+    verification: &AutomatonBootstrapVerification,
+) -> FactoryError {
+    FactoryError::AutomatonBootstrapVerificationFailed {
+        canister_id: canister_id.to_string(),
+        failures: verification.failures.clone(),
+    }
+}
+
+fn persist_failed_spawn_runtime(
+    state: &mut FactoryState,
+    session_id: &str,
+    runtime: &AutomatonRuntimeState,
+) {
+    state
+        .runtimes
+        .insert(runtime.canister_id.clone(), runtime.clone());
+
+    if let Some(session) = state.sessions.get_mut(session_id) {
+        session.automaton_canister_id = Some(runtime.canister_id.clone());
+        session.automaton_evm_address = Some(runtime.evm_address.clone());
+    }
+}
+
+fn persist_release_broadcast_record(
+    state: &mut FactoryState,
+    session_id: &str,
+    record: &ReleaseBroadcastRecord,
+) {
+    if let Some(session) = state.sessions.get_mut(session_id) {
+        session.release_broadcast = Some(record.clone());
+    }
+}
+
+fn failure_audit_reason(reason: &str, error: &FactoryError) -> String {
+    format!("{reason}: {error}")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fail_spawn_session_sync(
+    session_id: &str,
+    now_ms: u64,
+    reason: &str,
+    runtime: Option<&AutomatonRuntimeState>,
+    error: FactoryError,
+) -> Result<SpawnExecutionReceipt, FactoryError> {
+    let _ = write_state(|state| {
+        if let Some(runtime) = runtime {
+            persist_failed_spawn_runtime(state, session_id, runtime);
+        }
+
+        mark_session_failed_in_state(
+            state,
+            session_id,
+            SessionAuditActor::System,
+            now_ms,
+            &failure_audit_reason(reason, &error),
+        )
+    });
+
+    Err(error)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionReceipt, FactoryError> {
-    let expires_at = read_state(|state| {
+    let session_snapshot = read_state(|state| {
         state
             .sessions
             .get(session_id)
-            .map(|session| session.expires_at)
+            .cloned()
             .ok_or_else(|| FactoryError::SessionNotFound {
                 session_id: session_id.to_string(),
             })
     })?;
+
+    if session_snapshot.payment_status != PaymentStatus::Paid {
+        return Err(FactoryError::PaymentNotSettled {
+            session_id: session_id.to_string(),
+            status: session_snapshot.payment_status,
+        });
+    }
+
+    match session_snapshot.state {
+        SpawnSessionState::PaymentDetected => {}
+        SpawnSessionState::Complete => {
+            return Ok(SpawnExecutionReceipt {
+                session_id: session_snapshot.session_id.clone(),
+                automaton_canister_id: session_snapshot
+                    .automaton_canister_id
+                    .clone()
+                    .expect("completed session has canister id"),
+                automaton_evm_address: session_snapshot
+                    .automaton_evm_address
+                    .clone()
+                    .expect("completed session has evm address"),
+                funded_amount: session_snapshot.net_forward_amount.clone(),
+                controller: format!(
+                    "controller:{}",
+                    session_snapshot
+                        .automaton_canister_id
+                        .clone()
+                        .expect("completed session has canister id")
+                ),
+                release_tx_hash: session_snapshot.release_tx_hash.clone(),
+                release_broadcast_at: session_snapshot.release_broadcast_at,
+                completed_at: session_snapshot.updated_at,
+            });
+        }
+        state => {
+            return Err(FactoryError::SessionNotReadyForSpawn {
+                session_id: session_id.to_string(),
+                state,
+            });
+        }
+    }
+
+    let expires_at = session_snapshot.expires_at;
     if now_ms > expires_at {
         let _ = expire_spawn_session(session_id, now_ms)?;
         return Err(FactoryError::SessionExpired {
@@ -26,110 +391,82 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
         });
     }
 
+    let (artifact_loaded, cycles_per_spawn) =
+        read_state(|state| (state.wasm_bytes.is_some(), state.cycles_per_spawn));
+    if !artifact_loaded {
+        return fail_spawn_session_sync(
+            session_id,
+            now_ms,
+            "spawn artifact unavailable",
+            None,
+            FactoryError::ManagementCallFailed {
+                method: "install_code".to_string(),
+                message: "artifact not loaded".to_string(),
+            },
+        );
+    }
+    let child_runtime =
+        read_state(|state| validate_automaton_child_runtime_config(&state.child_runtime));
+    let child_runtime = if let Err(error) = child_runtime {
+        return fail_spawn_session_sync(
+            session_id,
+            now_ms,
+            "child runtime config missing or invalid",
+            None,
+            error,
+        );
+    } else {
+        child_runtime.expect("validated above")
+    };
+    if let Err(error @ FactoryError::InsufficientCyclesPool { .. }) =
+        ensure_spawn_creation_cycles(u128::from(cycles_per_spawn))
+    {
+        return fail_spawn_session_sync(
+            session_id,
+            now_ms,
+            "cycles pool below required minimum",
+            None,
+            error,
+        );
+    }
+
     write_state(|state| {
-        let (payment_status, session_state) =
-            {
-                let session = state.sessions.get(session_id).ok_or_else(|| {
-                    FactoryError::SessionNotFound {
-                        session_id: session_id.to_string(),
-                    }
-                })?;
-                (session.payment_status.clone(), session.state.clone())
-            };
-
-        if payment_status != PaymentStatus::Paid {
-            return Err(FactoryError::PaymentNotSettled {
-                session_id: session_id.to_string(),
-                status: payment_status,
-            });
-        }
-
-        match session_state {
-            SpawnSessionState::PaymentDetected | SpawnSessionState::Failed => {}
-            SpawnSessionState::Complete => {
-                let session = state.sessions.get(session_id).expect("session exists");
-                return Ok(SpawnExecutionReceipt {
-                    session_id: session.session_id.clone(),
-                    automaton_canister_id: session
-                        .automaton_canister_id
-                        .clone()
-                        .expect("completed session has canister id"),
-                    automaton_evm_address: session
-                        .automaton_evm_address
-                        .clone()
-                        .expect("completed session has evm address"),
-                    funded_amount: session.net_forward_amount.clone(),
-                    controller: format!(
-                        "controller:{}",
-                        session
-                            .automaton_canister_id
-                            .clone()
-                            .expect("completed session has canister id")
-                    ),
-                    completed_at: session.updated_at,
-                });
-            }
-            state => {
-                return Err(FactoryError::SessionNotReadyForSpawn {
-                    session_id: session_id.to_string(),
-                    state,
-                });
-            }
-        }
-
-        let previous_state = {
-            let session = state.sessions.get(session_id).expect("session exists");
-            session.state.clone()
-        };
-        {
-            let session = state.sessions.get_mut(session_id).expect("session exists");
-            session.state = SpawnSessionState::Spawning;
-            session.retryable = false;
-            session.refundable = false;
-            session.updated_at = now_ms;
-        }
-        record_session_audit(
+        apply_session_event_in_state(
             state,
             session_id,
-            Some(previous_state),
-            SpawnSessionState::Spawning,
             SessionAuditActor::System,
             now_ms,
+            SpawnSessionEvent::SpawnStarted,
             "spawn execution started",
-        );
+        )?;
 
         state.next_automaton_nonce += 1;
 
         let version_commit = state.version_commit.clone();
-        let mut runtime = {
-            let session = state.sessions.get(session_id).expect("session exists");
-            let canister_id = session
-                .automaton_canister_id
-                .clone()
-                .unwrap_or_else(|| format!("automaton-{:04}", state.next_automaton_nonce));
-            let evm_address = session
-                .automaton_evm_address
-                .clone()
-                .unwrap_or_else(|| format!("0x{:040x}", state.next_automaton_nonce));
-            initialize_automaton(session, canister_id, evm_address, now_ms)
-        };
+        let canister_id = session_snapshot
+            .automaton_canister_id
+            .clone()
+            .unwrap_or_else(|| format!("automaton-{:04}", state.next_automaton_nonce));
+        let evm_address = session_snapshot
+            .automaton_evm_address
+            .clone()
+            .unwrap_or_else(|| derive_child_evm_address_for_key_name(&child_runtime.ecdsa_key_name));
+        let mut runtime = initialize_automaton(&session_snapshot, canister_id, evm_address, now_ms);
+        runtime.evm_address_derived_at = Some(now_ms);
 
         {
             let session = state.sessions.get_mut(session_id).expect("session exists");
             session.automaton_canister_id = Some(runtime.canister_id.clone());
             session.automaton_evm_address = Some(runtime.evm_address.clone());
-            session.state = SpawnSessionState::FundingAutomaton;
-            session.updated_at = now_ms;
         }
-        record_session_audit(
+        apply_session_event_in_state(
             state,
             session_id,
-            Some(SpawnSessionState::Spawning),
-            SpawnSessionState::FundingAutomaton,
             SessionAuditActor::System,
             now_ms,
+            SpawnSessionEvent::InstallSucceeded,
             "automaton initialized",
-        );
+        )?;
 
         let net_forward_amount = {
             let session = state.sessions.get(session_id).expect("session exists");
@@ -149,29 +486,97 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
         };
         runtime.funded_amount = amount_to_string(net_forward_amount);
         runtime.last_funded_at = Some(now_ms);
-
-        let controller = match complete_controller_handoff(&mut runtime, "factory") {
-            Ok(controller) => controller,
-            Err(error) => {
-                state.runtimes.insert(runtime.canister_id.clone(), runtime);
+        runtime.install_succeeded_at = Some(now_ms);
+        runtime.bootstrap_verification = Some(verify_spawned_automaton_bootstrap_sync(
+            &session_snapshot,
+            &runtime,
+            state.release_broadcast_config.chain_id,
+            &version_commit,
+            now_ms,
+        ));
+        if let Some(verification) = runtime.bootstrap_verification.as_ref() {
+            if !verification.passed {
+                state
+                    .runtimes
+                    .insert(runtime.canister_id.clone(), runtime.clone());
                 let _ = mark_session_failed_in_state(
                     state,
                     session_id,
                     SessionAuditActor::System,
                     now_ms,
-                    "controller handoff failed",
+                    "spawned canister bootstrap verification failed",
                 )?;
-                return Err(error);
+                return Err(bootstrap_verification_error(
+                    &runtime.canister_id,
+                    verification,
+                ));
+            }
+        }
+
+        let controller = format!("{CONTROLLER_FIELD}:{}", runtime.canister_id);
+        runtime.controller_handoff_completed_at = Some(now_ms);
+
+        let base_rpc_endpoints = configured_rpc_endpoints(
+            state.base_rpc_endpoint.clone(),
+            state.base_rpc_fallback_endpoint.clone(),
+        );
+        if base_rpc_endpoints.is_empty() {
+            persist_failed_spawn_runtime(state, session_id, &runtime);
+            let error = FactoryError::ManagementCallFailed {
+                method: "http_request".to_string(),
+                message: "base RPC endpoint is not configured".to_string(),
+            };
+            let _ = mark_session_failed_in_state(
+                state,
+                session_id,
+                SessionAuditActor::System,
+                now_ms,
+                "release broadcast prerequisites missing",
+            )?;
+            return Err(error);
+        }
+        let escrow_contract_address = state.escrow_contract_address.clone();
+        let claim_id = state
+            .sessions
+            .get(session_id)
+            .expect("session exists")
+            .claim_id
+            .clone();
+        let release = match crate::evm::broadcast_release_transaction(
+            &claim_id,
+            &runtime.evm_address,
+            &base_rpc_endpoints,
+            &escrow_contract_address,
+            state.next_automaton_nonce,
+            now_ms,
+            &state.release_broadcast_config,
+        ) {
+            Ok(release) => release,
+            Err(error) => {
+                persist_failed_spawn_runtime(state, session_id, &runtime);
+                persist_release_broadcast_record(state, session_id, &error.record);
+                let _ = mark_session_failed_in_state(
+                    state,
+                    session_id,
+                    SessionAuditActor::System,
+                    now_ms,
+                    "release broadcast failed",
+                )?;
+                return Err(error.source);
             }
         };
+        let crate::evm::ReleaseBroadcastReceipt {
+            release_tx_hash,
+            release_broadcast_at,
+            record: release_record,
+        } = release;
 
         let registry_record = {
             let session = state.sessions.get_mut(session_id).expect("session exists");
             clear_provider_secrets(session, Some(&mut runtime));
-            session.state = SpawnSessionState::Complete;
-            session.retryable = false;
-            session.refundable = false;
-            session.updated_at = now_ms;
+            session.release_tx_hash = Some(release_tx_hash.clone());
+            session.release_broadcast_at = Some(release_broadcast_at);
+            session.release_broadcast = Some(release_record.clone());
 
             SpawnedAutomatonRecord {
                 canister_id: runtime.canister_id.clone(),
@@ -204,15 +609,14 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
         state
             .registry
             .insert(registry_record.canister_id.clone(), registry_record);
-        record_session_audit(
+        apply_session_event_in_state(
             state,
             session_id,
-            Some(SpawnSessionState::FundingAutomaton),
-            SpawnSessionState::Complete,
             SessionAuditActor::System,
             now_ms,
-            "spawn completed and controller handoff finalized",
-        );
+            SpawnSessionEvent::ReleaseBroadcast,
+            "spawn completed after child bootstrap verification, release broadcast, and controller handoff finalized",
+        )?;
 
         Ok(SpawnExecutionReceipt {
             session_id: session_id.to_string(),
@@ -220,7 +624,690 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
             automaton_evm_address: runtime.evm_address,
             funded_amount: amount_to_string(net_forward_amount),
             controller,
+            release_tx_hash: Some(release_tx_hash),
+            release_broadcast_at: Some(release_broadcast_at),
             completed_at: now_ms,
         })
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn cleanup_orphaned_canister(canister_id: &str) {
+    use candid::Principal;
+    use ic_cdk::api::management_canister::main::delete_canister;
+    use ic_cdk::api::management_canister::main::CanisterIdRecord;
+
+    let principal = match Principal::from_text(canister_id) {
+        Ok(principal) => principal,
+        Err(_) => return,
+    };
+
+    let _ = delete_canister(CanisterIdRecord {
+        canister_id: principal,
+    })
+    .await;
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fail_spawn_session(
+    session_id: &str,
+    now_ms: u64,
+    reason: &str,
+    cleanup_canister_id: Option<&str>,
+    runtime: Option<&AutomatonRuntimeState>,
+    error: FactoryError,
+) -> Result<SpawnExecutionReceipt, FactoryError> {
+    if let Some(canister_id) = cleanup_canister_id {
+        cleanup_orphaned_canister(canister_id).await;
+    }
+
+    let _ = write_state(|state| {
+        if let Some(runtime) = runtime {
+            persist_failed_spawn_runtime(state, session_id, runtime);
+        }
+
+        mark_session_failed_in_state(
+            state,
+            session_id,
+            SessionAuditActor::System,
+            now_ms,
+            &failure_audit_reason(reason, &error),
+        )
+    });
+
+    Err(error)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn execute_spawn(
+    session_id: &str,
+    started_at_ms: u64,
+) -> Result<SpawnExecutionReceipt, FactoryError> {
+    use candid::Principal;
+    use ic_cdk::api::management_canister::main::{
+        create_canister, install_code, CanisterInstallMode, CanisterSettings,
+        CreateCanisterArgument, InstallCodeArgument,
+    };
+
+    let session_snapshot = read_state(|state| {
+        state
+            .sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| FactoryError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })
+    })?;
+
+    if session_snapshot.payment_status != PaymentStatus::Paid {
+        return Err(FactoryError::PaymentNotSettled {
+            session_id: session_id.to_string(),
+            status: session_snapshot.payment_status,
+        });
+    }
+
+    match session_snapshot.state {
+        SpawnSessionState::PaymentDetected => {}
+        SpawnSessionState::Complete => {
+            return Ok(SpawnExecutionReceipt {
+                session_id: session_snapshot.session_id.clone(),
+                automaton_canister_id: session_snapshot
+                    .automaton_canister_id
+                    .clone()
+                    .expect("completed session has canister id"),
+                automaton_evm_address: session_snapshot
+                    .automaton_evm_address
+                    .clone()
+                    .expect("completed session has evm address"),
+                funded_amount: session_snapshot.net_forward_amount.clone(),
+                controller: format!(
+                    "controller:{}",
+                    session_snapshot
+                        .automaton_canister_id
+                        .clone()
+                        .expect("completed session has canister id")
+                ),
+                release_tx_hash: session_snapshot.release_tx_hash.clone(),
+                release_broadcast_at: session_snapshot.release_broadcast_at,
+                completed_at: session_snapshot.updated_at,
+            });
+        }
+        state => {
+            return Err(FactoryError::SessionNotReadyForSpawn {
+                session_id: session_id.to_string(),
+                state,
+            });
+        }
+    }
+
+    let expires_at = session_snapshot.expires_at;
+    let (wasm_module_opt, version_commit, create_cycles) = read_state(|state| {
+        (
+            state.wasm_bytes.clone(),
+            state.version_commit.clone(),
+            state
+                .cycles_per_spawn
+                .max(ic_cdk::api::cost_create_canister() as u64) as u128,
+        )
+    });
+    let wasm_module = match wasm_module_opt {
+        Some(wasm_module) => wasm_module,
+        None => {
+            return fail_spawn_session(
+                session_id,
+                current_time_ms(),
+                "spawn artifact unavailable",
+                None,
+                None,
+                FactoryError::ManagementCallFailed {
+                    method: "install_code".to_string(),
+                    message: "artifact not loaded".to_string(),
+                },
+            )
+            .await;
+        }
+    };
+    if let Err(error @ FactoryError::InsufficientCyclesPool { .. }) =
+        ensure_spawn_creation_cycles(create_cycles)
+    {
+        return fail_spawn_session(
+            session_id,
+            current_time_ms(),
+            "cycles pool below required minimum",
+            None,
+            None,
+            error,
+        )
+        .await;
+    }
+    let child_runtime =
+        match read_state(|state| validate_automaton_child_runtime_config(&state.child_runtime)) {
+            Ok(config) => config,
+            Err(error) => {
+                return fail_spawn_session(
+                    session_id,
+                    current_time_ms(),
+                    "child runtime config missing or invalid",
+                    None,
+                    None,
+                    error,
+                )
+                .await;
+            }
+        };
+
+    write_state(|state| {
+        apply_session_event_in_state(
+            state,
+            session_id,
+            SessionAuditActor::System,
+            started_at_ms,
+            SpawnSessionEvent::SpawnStarted,
+            "spawn execution started",
+        )
+    })?;
+
+    let mut canister_id = session_snapshot.automaton_canister_id.clone();
+    let mut runtime = read_state(|state| {
+        canister_id
+            .as_ref()
+            .and_then(|id| state.runtimes.get(id).cloned())
+    });
+
+    let needs_install = runtime
+        .as_ref()
+        .map(|existing| existing.install_succeeded_at.is_none())
+        .unwrap_or(true);
+
+    if needs_install {
+        let (record,) = match create_canister(
+            CreateCanisterArgument {
+                settings: Some(CanisterSettings {
+                    controllers: None,
+                    ..Default::default()
+                }),
+            },
+            create_cycles,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                return fail_spawn_session(
+                    session_id,
+                    current_time_ms(),
+                    "create_canister failed",
+                    None,
+                    None,
+                    FactoryError::ManagementCallFailed {
+                        method: "create_canister".to_string(),
+                        message: rejection_message(error),
+                    },
+                )
+                .await;
+            }
+        };
+
+        let created_canister_id = record.canister_id.to_text();
+        canister_id = Some(created_canister_id.clone());
+        let expected_evm_address = match derive_child_evm_address(
+            &created_canister_id,
+            &child_runtime.ecdsa_key_name,
+        )
+        .await
+        {
+            Ok(address) => address,
+            Err(error) => {
+                cleanup_orphaned_canister(&created_canister_id).await;
+                return fail_spawn_session(
+                    session_id,
+                    current_time_ms(),
+                    "derive_automaton_evm_address failed",
+                    Some(&created_canister_id),
+                    None,
+                    error,
+                )
+                .await;
+            }
+        };
+        runtime = Some(initialize_automaton(
+            &session_snapshot,
+            created_canister_id.clone(),
+            expected_evm_address,
+            started_at_ms,
+        ));
+        runtime
+            .as_mut()
+            .expect("runtime should exist after create")
+            .evm_address_derived_at = Some(started_at_ms);
+
+        if let Some(runtime) = runtime.as_ref() {
+            let runtime_clone = runtime.clone();
+            write_state(|state| {
+                let session = state.sessions.get_mut(session_id).expect("session exists");
+                session.automaton_canister_id = Some(created_canister_id.clone());
+                session.automaton_evm_address = Some(runtime_clone.evm_address.clone());
+                state
+                    .runtimes
+                    .insert(created_canister_id.clone(), runtime_clone);
+            });
+        }
+
+        let current_time = current_time_ms();
+        if current_time > expires_at {
+            cleanup_orphaned_canister(&created_canister_id).await;
+            return fail_spawn_session(
+                session_id,
+                current_time,
+                "session expired during spawn",
+                Some(&created_canister_id),
+                None,
+                FactoryError::SessionExpired {
+                    session_id: session_id.to_string(),
+                    expires_at,
+                },
+            )
+            .await;
+        }
+
+        let install_args =
+            build_automaton_install_args(&session_snapshot, &version_commit, &child_runtime);
+        let canister_principal = Principal::from_text(&created_canister_id).map_err(|error| {
+            FactoryError::ManagementCallFailed {
+                method: "parse_canister_id".to_string(),
+                message: error.to_string(),
+            }
+        })?;
+
+        if let Err(error) = install_code(InstallCodeArgument {
+            mode: CanisterInstallMode::Install,
+            canister_id: canister_principal,
+            wasm_module,
+            arg: install_args,
+        })
+        .await
+        {
+            cleanup_orphaned_canister(&created_canister_id).await;
+            return fail_spawn_session(
+                session_id,
+                current_time_ms(),
+                "install_code failed",
+                Some(&created_canister_id),
+                None,
+                FactoryError::ManagementCallFailed {
+                    method: "install_code".to_string(),
+                    message: rejection_message(error),
+                },
+            )
+            .await;
+        }
+
+        let current_time = current_time_ms();
+        if current_time > expires_at {
+            cleanup_orphaned_canister(&created_canister_id).await;
+            return fail_spawn_session(
+                session_id,
+                current_time,
+                "session expired during spawn",
+                Some(&created_canister_id),
+                None,
+                FactoryError::SessionExpired {
+                    session_id: session_id.to_string(),
+                    expires_at,
+                },
+            )
+            .await;
+        }
+
+        runtime
+            .as_mut()
+            .expect("runtime should exist after create")
+            .install_succeeded_at = Some(current_time);
+        runtime
+            .as_mut()
+            .expect("runtime should exist after create")
+            .funded_amount = session_snapshot.net_forward_amount.clone();
+        runtime
+            .as_mut()
+            .expect("runtime should exist after create")
+            .last_funded_at = Some(current_time);
+
+        write_state(|state| {
+            state.runtimes.insert(
+                created_canister_id.clone(),
+                runtime
+                    .as_ref()
+                    .expect("runtime should exist after install")
+                    .clone(),
+            );
+            {
+                let session = state.sessions.get_mut(session_id).expect("session exists");
+                session.automaton_canister_id = Some(created_canister_id.clone());
+                session.automaton_evm_address =
+                    runtime.as_ref().map(|entry| entry.evm_address.clone());
+            }
+            apply_session_event_in_state(
+                state,
+                session_id,
+                SessionAuditActor::System,
+                current_time,
+                SpawnSessionEvent::InstallSucceeded,
+                "automaton installed",
+            )
+        })?;
+    } else {
+        let current_time = current_time_ms();
+        write_state(|state| {
+            {
+                let session = state.sessions.get_mut(session_id).expect("session exists");
+                session.automaton_canister_id = canister_id.clone();
+                session.automaton_evm_address =
+                    runtime.as_ref().map(|entry| entry.evm_address.clone());
+            }
+            apply_session_event_in_state(
+                state,
+                session_id,
+                SessionAuditActor::System,
+                current_time,
+                SpawnSessionEvent::InstallSucceeded,
+                "automaton already installed; resuming handoff",
+            )
+        })?;
+    }
+
+    let canister_id = canister_id.expect("spawn path should have a canister id");
+    let expected_evm_address = match derive_child_evm_address(
+        &canister_id,
+        &child_runtime.ecdsa_key_name,
+    )
+    .await
+    {
+        Ok(address) => address,
+        Err(error) => {
+            return fail_spawn_session(
+                session_id,
+                current_time_ms(),
+                "derive_automaton_evm_address failed",
+                Some(&canister_id),
+                runtime.as_ref(),
+                error,
+            )
+            .await;
+        }
+    };
+    let mut runtime = runtime.unwrap_or_else(|| {
+        initialize_automaton(
+            &session_snapshot,
+            canister_id.clone(),
+            expected_evm_address.clone(),
+            started_at_ms,
+        )
+    });
+    runtime.evm_address = expected_evm_address.clone();
+    runtime.evm_address_derived_at.get_or_insert(started_at_ms);
+    let expected_child_chain_id = read_state(|state| state.release_broadcast_config.chain_id);
+    let verification_evidence = match load_spawned_automaton_bootstrap_evidence(&canister_id).await
+    {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            return fail_spawn_session(
+                session_id,
+                current_time_ms(),
+                "spawned canister bootstrap verification failed",
+                None,
+                Some(&runtime),
+                error,
+            )
+            .await;
+        }
+    };
+    let verification = build_bootstrap_verification(
+        &session_snapshot,
+        expected_child_chain_id,
+        &version_commit,
+        &expected_evm_address,
+        verification_evidence,
+        current_time_ms(),
+    );
+    runtime.bootstrap_verification = Some(verification.clone());
+    write_state(|state| persist_failed_spawn_runtime(state, session_id, &runtime));
+    if !verification.passed {
+        return fail_spawn_session(
+            session_id,
+            verification.checked_at,
+            "spawned canister bootstrap verification failed",
+            None,
+            Some(&runtime),
+            bootstrap_verification_error(&canister_id, &verification),
+        )
+        .await;
+    }
+
+    if let Err(error) = complete_controller_handoff_live(&canister_id).await {
+        return fail_spawn_session(
+            session_id,
+            current_time_ms(),
+            "controller handoff failed",
+            Some(&canister_id),
+            None,
+            error,
+        )
+        .await;
+    }
+    let current_time = current_time_ms();
+    let controller = format!("{CONTROLLER_FIELD}:{canister_id}");
+    runtime.controller_handoff_completed_at = Some(current_time);
+    runtime.install_succeeded_at.get_or_insert(current_time);
+    runtime.funded_amount = session_snapshot.net_forward_amount.clone();
+    runtime.last_funded_at = Some(current_time);
+    runtime.evm_address = expected_evm_address.clone();
+    write_state(|state| persist_failed_spawn_runtime(state, session_id, &runtime));
+
+    let (base_rpc_endpoints, release_broadcast_config) = read_state(|state| {
+        (
+            configured_rpc_endpoints(
+                state.base_rpc_endpoint.clone(),
+                state.base_rpc_fallback_endpoint.clone(),
+            ),
+            state.release_broadcast_config.clone(),
+        )
+    });
+    if base_rpc_endpoints.is_empty() {
+        return fail_spawn_session(
+            session_id,
+            current_time,
+            "release broadcast prerequisites missing",
+            None,
+            Some(&runtime),
+            FactoryError::ManagementCallFailed {
+                method: "http_request".to_string(),
+                message: "base RPC endpoint is not configured".to_string(),
+            },
+        )
+        .await;
+    }
+    let escrow_contract_address = read_state(|state| state.escrow_contract_address.clone());
+    let release = match crate::evm::broadcast_release_transaction(
+        &session_snapshot.claim_id,
+        &runtime.evm_address,
+        &base_rpc_endpoints,
+        &escrow_contract_address,
+        started_at_ms,
+        current_time,
+        &release_broadcast_config,
+    )
+    .await
+    {
+        Ok(release) => release,
+        Err(error) => {
+            let _ = write_state(|state| {
+                persist_release_broadcast_record(state, session_id, &error.record);
+            });
+            return fail_spawn_session(
+                session_id,
+                current_time_ms(),
+                "release broadcast failed",
+                None,
+                Some(&runtime),
+                error.source,
+            )
+            .await;
+        }
+    };
+    let crate::evm::ReleaseBroadcastReceipt {
+        release_tx_hash,
+        release_broadcast_at,
+        record: release_record,
+    } = release;
+
+    write_state(|state| {
+        let session = state.sessions.get_mut(session_id).expect("session exists");
+        clear_provider_secrets(session, Some(&mut runtime));
+        session.release_tx_hash = Some(release_tx_hash.clone());
+        session.release_broadcast_at = Some(release_broadcast_at);
+        session.release_broadcast = Some(release_record.clone());
+
+        let record = SpawnedAutomatonRecord {
+            canister_id: canister_id.clone(),
+            steward_address: session.steward_address.clone(),
+            evm_address: runtime.evm_address.clone(),
+            chain: session.chain.clone(),
+            session_id: session.session_id.clone(),
+            parent_id: session.parent_id.clone(),
+            child_ids: session.child_ids.clone(),
+            created_at: release_broadcast_at,
+            version_commit: version_commit.clone(),
+        };
+
+        state.runtimes.insert(canister_id.clone(), runtime.clone());
+        state.registry.insert(canister_id.clone(), record);
+        apply_session_event_in_state(
+            state,
+            session_id,
+            SessionAuditActor::System,
+            release_broadcast_at,
+            SpawnSessionEvent::ReleaseBroadcast,
+            "spawn completed after child bootstrap verification, release broadcast, and controller handoff finalized",
+        )
+    })?;
+
+    Ok(SpawnExecutionReceipt {
+        session_id: session_id.to_string(),
+        automaton_canister_id: canister_id,
+        automaton_evm_address: runtime.evm_address,
+        funded_amount: session_snapshot.net_forward_amount,
+        controller,
+        release_tx_hash: Some(release_tx_hash),
+        release_broadcast_at: Some(release_broadcast_at),
+        completed_at: current_time,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_bootstrap_verification;
+    use crate::types::{
+        AutomatonBootstrapEvidence, PaymentStatus, ProviderConfig, SpawnAsset, SpawnChain,
+        SpawnConfig, SpawnSession, SpawnSessionState,
+    };
+
+    fn sample_session() -> SpawnSession {
+        SpawnSession {
+            session_id: "session-1".to_string(),
+            claim_id: "claim-1".to_string(),
+            steward_address: "0xsteward".to_string(),
+            chain: SpawnChain::Base,
+            asset: SpawnAsset::Usdc,
+            gross_amount: "75000000".to_string(),
+            platform_fee: "5000000".to_string(),
+            creation_cost: "45000000".to_string(),
+            net_forward_amount: "25000000".to_string(),
+            quote_terms_hash: "quote-hash".to_string(),
+            expires_at: 99_999,
+            state: SpawnSessionState::BroadcastingRelease,
+            retryable: false,
+            refundable: false,
+            payment_status: PaymentStatus::Paid,
+            last_scanned_block: Some(10),
+            automaton_canister_id: Some("automaton-0001".to_string()),
+            automaton_evm_address: Some("0xautomaton".to_string()),
+            release_tx_hash: None,
+            release_broadcast_at: None,
+            release_broadcast: None,
+            parent_id: Some("parent-1".to_string()),
+            child_ids: Vec::new(),
+            config: SpawnConfig {
+                chain: SpawnChain::Base,
+                risk: 7,
+                strategies: vec![" trend ".to_string()],
+                skills: vec![" search ".to_string()],
+                provider: ProviderConfig {
+                    open_router_api_key: Some("or-key".to_string()),
+                    model: Some("openrouter/auto".to_string()),
+                    brave_search_api_key: Some("brave-key".to_string()),
+                },
+            },
+            created_at: 1,
+            updated_at: 2,
+        }
+    }
+
+    #[test]
+    fn bootstrap_verification_passes_with_matching_child_evidence() {
+        let mut session = sample_session();
+        session.steward_address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
+        let verification = build_bootstrap_verification(
+            &session,
+            8_453,
+            "0123456789abcdef0123456789abcdef01234567",
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+            AutomatonBootstrapEvidence {
+                bootstrap_session_id: Some(session.session_id.clone()),
+                bootstrap_parent_id: session.parent_id.clone(),
+                bootstrap_risk: Some(session.config.risk),
+                bootstrap_strategies: vec!["trend".to_string()],
+                bootstrap_skills: vec!["search".to_string()],
+                bootstrap_version_commit: Some(
+                    "0123456789abcdef0123456789abcdef01234567".to_string(),
+                ),
+                steward_address: Some("0x70997970c51812dc3a010c7d01b50e0d17dc79c8".to_string()),
+                steward_chain_id: Some(8_453),
+                steward_enabled: Some(true),
+                evm_address: Some("0x70997970c51812dc3a010c7d01b50e0d17dc79c8".to_string()),
+            },
+            12_000,
+        );
+
+        assert!(verification.passed);
+        assert!(verification.failures.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_verification_captures_child_mismatches() {
+        let session = sample_session();
+        let verification = build_bootstrap_verification(
+            &session,
+            8_453,
+            "0123456789abcdef0123456789abcdef01234567",
+            "0xautomaton",
+            AutomatonBootstrapEvidence {
+                bootstrap_session_id: Some("wrong-session".to_string()),
+                bootstrap_parent_id: None,
+                bootstrap_risk: Some(3),
+                bootstrap_strategies: vec!["mean-reversion".to_string()],
+                bootstrap_skills: vec!["messaging".to_string()],
+                bootstrap_version_commit: Some(
+                    "fedcba9876543210fedcba9876543210fedcba98".to_string(),
+                ),
+                steward_address: Some("0xother".to_string()),
+                steward_chain_id: Some(1),
+                steward_enabled: Some(false),
+                evm_address: Some("0xother".to_string()),
+            },
+            12_000,
+        );
+
+        assert!(!verification.passed);
+        assert!(verification.failures.len() >= 5);
+    }
 }

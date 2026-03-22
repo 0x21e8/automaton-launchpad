@@ -1,13 +1,16 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use candid::{CandidType, Principal};
+use serde::{Deserialize, Serialize};
+
 pub const QUOTE_TERMS_HASH_FIELD: &str = "quoteTermsHash";
 pub const EXPIRES_AT_FIELD: &str = "expiresAt";
 pub const SESSION_ID_FIELD: &str = "sessionId";
-pub const FUNDING_AUTOMATON_STATE: &str = "funding_automaton";
+pub const BROADCASTING_RELEASE_STATE: &str = "broadcasting_release";
 pub const CONTROLLER_FIELD: &str = "controller";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum SpawnChain {
     Base,
 }
@@ -20,27 +23,25 @@ impl SpawnChain {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum SpawnAsset {
-    Eth,
     Usdc,
 }
 
 impl SpawnAsset {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Eth => "eth",
             Self::Usdc => "usdc",
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum SpawnSessionState {
     AwaitingPayment,
     PaymentDetected,
     Spawning,
-    FundingAutomaton,
+    BroadcastingRelease,
     Complete,
     Failed,
     Expired,
@@ -52,7 +53,7 @@ impl SpawnSessionState {
             Self::AwaitingPayment => "awaiting_payment",
             Self::PaymentDetected => "payment_detected",
             Self::Spawning => "spawning",
-            Self::FundingAutomaton => FUNDING_AUTOMATON_STATE,
+            Self::BroadcastingRelease => BROADCASTING_RELEASE_STATE,
             Self::Complete => "complete",
             Self::Failed => "failed",
             Self::Expired => "expired",
@@ -60,7 +61,7 @@ impl SpawnSessionState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum PaymentStatus {
     Unpaid,
     Partial,
@@ -79,22 +80,64 @@ impl PaymentStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum SessionAuditActor {
     System,
     User,
     Admin,
-    Escrow,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub open_router_api_key: Option<String>,
     pub model: Option<String>,
     pub brave_search_api_key: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct AutomatonChildRuntimeConfig {
+    pub ecdsa_key_name: Option<String>,
+    pub inbox_contract_address: Option<String>,
+    pub evm_chain_id: Option<u64>,
+    pub evm_rpc_url: Option<String>,
+    pub evm_confirmation_depth: Option<u64>,
+    pub evm_bootstrap_lookback_blocks: Option<u64>,
+    pub http_allowed_domains: Option<Vec<String>>,
+    pub llm_canister_id: Option<Principal>,
+    pub search_api_key: Option<String>,
+    pub cycle_topup_enabled: Option<bool>,
+    pub auto_topup_cycle_threshold: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct AutomatonSpawnBootstrapArgs {
+    pub steward_address: String,
+    pub session_id: String,
+    pub parent_id: Option<String>,
+    pub risk: u8,
+    pub strategies: Vec<String>,
+    pub skills: Vec<String>,
+    pub provider: ProviderConfig,
+    pub version_commit: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct AutomatonChildInitArgs {
+    pub ecdsa_key_name: String,
+    pub inbox_contract_address: Option<String>,
+    pub evm_chain_id: Option<u64>,
+    pub evm_rpc_url: Option<String>,
+    pub evm_confirmation_depth: Option<u64>,
+    pub evm_bootstrap_lookback_blocks: Option<u64>,
+    pub http_allowed_domains: Option<Vec<String>>,
+    pub llm_canister_id: Option<Principal>,
+    pub search_api_key: Option<String>,
+    pub cycle_topup_enabled: Option<bool>,
+    pub auto_topup_cycle_threshold: Option<u64>,
+    pub spawn_bootstrap: Option<AutomatonSpawnBootstrapArgs>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnConfig {
     pub chain: SpawnChain,
     pub risk: u8,
@@ -103,7 +146,7 @@ pub struct SpawnConfig {
     pub provider: ProviderConfig,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct CreateSpawnSessionRequest {
     pub steward_address: String,
     pub asset: SpawnAsset,
@@ -112,9 +155,8 @@ pub struct CreateSpawnSessionRequest {
     pub parent_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct FeeConfig {
-    pub eth_fee: String,
     pub usdc_fee: String,
     pub updated_at: u64,
 }
@@ -122,15 +164,13 @@ pub struct FeeConfig {
 impl FeeConfig {
     pub fn amount_for(&self, asset: &SpawnAsset) -> &str {
         match asset {
-            SpawnAsset::Eth => &self.eth_fee,
             SpawnAsset::Usdc => &self.usdc_fee,
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct CreationCostQuote {
-    pub eth_cost: String,
     pub usdc_cost: String,
     pub updated_at: u64,
 }
@@ -138,15 +178,83 @@ pub struct CreationCostQuote {
 impl CreationCostQuote {
     pub fn amount_for(&self, asset: &SpawnAsset) -> &str {
         match asset {
-            SpawnAsset::Eth => &self.eth_cost,
             SpawnAsset::Usdc => &self.usdc_cost,
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ReleaseBroadcastConfig {
+    pub chain_id: u64,
+    pub max_priority_fee_per_gas: u64,
+    pub max_fee_per_gas: u64,
+    pub gas_limit: u64,
+    pub ecdsa_key_name: String,
+}
+
+impl Default for ReleaseBroadcastConfig {
+    fn default() -> Self {
+        Self {
+            chain_id: 8_453,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 3_000_000_000,
+            gas_limit: 250_000,
+            ecdsa_key_name: "key_1".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum ReleaseBroadcastStage {
+    CalldataEncoding,
+    SigningPayloadConstruction,
+    PublicKeyLookup,
+    Signing,
+    SignatureRecovery,
+    RawTransactionConstruction,
+    RpcBroadcast,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ReleaseSignatureRecord {
+    pub y_parity: bool,
+    pub r: String,
+    pub s: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ReleaseBroadcastFailure {
+    pub stage: ReleaseBroadcastStage,
+    pub message: String,
+    pub rpc_category: Option<RpcFailureCategory>,
+    pub rpc_code: Option<i64>,
+    pub rpc_endpoint: Option<String>,
+    pub occurred_at: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ReleaseBroadcastRecord {
+    pub claim_id: String,
+    pub recipient: String,
+    pub escrow_contract_address: String,
+    pub nonce: u64,
+    pub chain_id: u64,
+    pub max_priority_fee_per_gas: u64,
+    pub max_fee_per_gas: u64,
+    pub gas_limit: u64,
+    pub calldata_hex: String,
+    pub signing_payload_hash: Option<String>,
+    pub signature: Option<ReleaseSignatureRecord>,
+    pub raw_transaction_hash: Option<String>,
+    pub rpc_tx_hash: Option<String>,
+    pub broadcast_at: Option<u64>,
+    pub last_error: Option<ReleaseBroadcastFailure>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnPaymentInstructions {
     pub session_id: String,
+    pub claim_id: String,
     pub chain: SpawnChain,
     pub asset: SpawnAsset,
     pub payment_address: String,
@@ -155,9 +263,25 @@ pub struct SpawnPaymentInstructions {
     pub expires_at: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl SpawnPaymentInstructions {
+    pub fn from_session(session: &SpawnSession, payment_address: &str) -> Self {
+        Self {
+            session_id: session.session_id.clone(),
+            claim_id: session.claim_id.clone(),
+            chain: session.chain.clone(),
+            asset: session.asset.clone(),
+            payment_address: payment_address.to_string(),
+            gross_amount: session.gross_amount.clone(),
+            quote_terms_hash: session.quote_terms_hash.clone(),
+            expires_at: session.expires_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct EscrowClaim {
     pub session_id: String,
+    pub claim_id: String,
     pub quote_terms_hash: String,
     pub payment_address: String,
     pub chain: SpawnChain,
@@ -165,13 +289,14 @@ pub struct EscrowClaim {
     pub required_gross_amount: String,
     pub paid_amount: String,
     pub payment_status: PaymentStatus,
+    pub last_scanned_block: Option<u64>,
     pub refundable: bool,
     pub refunded_at: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnQuote {
     pub session_id: String,
     pub chain: SpawnChain,
@@ -185,27 +310,53 @@ pub struct SpawnQuote {
     pub payment: SpawnPaymentInstructions,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct AutomatonRuntimeState {
     pub canister_id: String,
     pub evm_address: String,
     pub steward_address: String,
     pub session_id: String,
     pub initialized_at: u64,
+    pub install_succeeded_at: Option<u64>,
+    pub evm_address_derived_at: Option<u64>,
+    pub controller_handoff_completed_at: Option<u64>,
     pub funded_amount: String,
     pub last_funded_at: Option<u64>,
-    pub controllers: Vec<String>,
     pub chain: SpawnChain,
     pub risk: u8,
     pub strategies: Vec<String>,
     pub skills: Vec<String>,
     pub model: Option<String>,
     pub provider_keys_cleared: bool,
+    pub bootstrap_verification: Option<AutomatonBootstrapVerification>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct AutomatonBootstrapEvidence {
+    pub bootstrap_session_id: Option<String>,
+    pub bootstrap_parent_id: Option<String>,
+    pub bootstrap_risk: Option<u8>,
+    pub bootstrap_strategies: Vec<String>,
+    pub bootstrap_skills: Vec<String>,
+    pub bootstrap_version_commit: Option<String>,
+    pub steward_address: Option<String>,
+    pub steward_chain_id: Option<u64>,
+    pub steward_enabled: Option<bool>,
+    pub evm_address: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct AutomatonBootstrapVerification {
+    pub checked_at: u64,
+    pub passed: bool,
+    pub evidence: AutomatonBootstrapEvidence,
+    pub failures: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnSession {
     pub session_id: String,
+    pub claim_id: String,
     pub steward_address: String,
     pub chain: SpawnChain,
     pub asset: SpawnAsset,
@@ -219,33 +370,133 @@ pub struct SpawnSession {
     pub retryable: bool,
     pub refundable: bool,
     pub payment_status: PaymentStatus,
+    pub last_scanned_block: Option<u64>,
     pub automaton_canister_id: Option<String>,
     pub automaton_evm_address: Option<String>,
+    pub release_tx_hash: Option<String>,
+    pub release_broadcast_at: Option<u64>,
+    pub release_broadcast: Option<ReleaseBroadcastRecord>,
     pub parent_id: Option<String>,
     pub child_ids: Vec<String>,
     pub config: SpawnConfig,
     pub created_at: u64,
     pub updated_at: u64,
-    pub payment: SpawnPaymentInstructions,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct CreateSpawnSessionResponse {
     pub session: SpawnSession,
     pub quote: SpawnQuote,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnExecutionReceipt {
     pub session_id: String,
     pub automaton_canister_id: String,
     pub automaton_evm_address: String,
     pub funded_amount: String,
     pub controller: String,
+    pub release_tx_hash: Option<String>,
+    pub release_broadcast_at: Option<u64>,
     pub completed_at: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum SchedulerJobKind {
+    PaymentPoll,
+    SpawnExecution { session_id: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum SchedulerJobStatus {
+    Pending,
+    Running,
+    Completed,
+    Backoff,
+    Skipped,
+    Terminal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum SchedulerFailureAction {
+    Retry,
+    Backoff,
+    Skip,
+    Terminal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum SchedulerFailureSource {
+    MissingConfig,
+    InvalidConfig,
+    Deterministic,
+    Transient,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct SchedulerJobFailure {
+    pub action: SchedulerFailureAction,
+    pub source: SchedulerFailureSource,
+    pub message: String,
+    pub occurred_at: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct SchedulerJob {
+    pub job_id: String,
+    pub kind: SchedulerJobKind,
+    pub status: SchedulerJobStatus,
+    pub next_run_at_ms: Option<u64>,
+    pub leased_at_ms: Option<u64>,
+    pub leased_until_ms: Option<u64>,
+    pub last_started_at_ms: Option<u64>,
+    pub last_finished_at_ms: Option<u64>,
+    pub attempt_count: u32,
+    pub consecutive_failure_count: u32,
+    pub success_count: u32,
+    pub last_error: Option<SchedulerJobFailure>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct SchedulerRuntime {
+    pub last_tick_started_ms: Option<u64>,
+    pub last_tick_finished_ms: Option<u64>,
+    pub last_tick_error: Option<String>,
+    pub active_job_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactorySchedulerJobCounts {
+    pub total: u64,
+    pub pending: u64,
+    pub running: u64,
+    pub completed: u64,
+    pub backoff: u64,
+    pub skipped: u64,
+    pub terminal: u64,
+    pub with_last_error: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactorySchedulerHealthSnapshot {
+    pub last_tick_started_ms: Option<u64>,
+    pub last_tick_finished_ms: Option<u64>,
+    pub last_tick_error: Option<String>,
+    pub active_job_ids: Vec<String>,
+    pub job_counts: FactorySchedulerJobCounts,
+    pub retry_queue_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactoryRuntimeSnapshot {
+    pub scheduler: FactorySchedulerHealthSnapshot,
+    pub active_jobs: Vec<SchedulerJob>,
+    pub retry_queue: Vec<SchedulerJob>,
+    pub recent_jobs: Vec<SchedulerJob>,
+    pub failed_jobs: Vec<SchedulerJob>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SessionAuditEntry {
     pub session_id: String,
     pub timestamp: u64,
@@ -255,13 +506,14 @@ pub struct SessionAuditEntry {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnSessionStatusResponse {
     pub session: SpawnSession,
+    pub payment: SpawnPaymentInstructions,
     pub audit: Vec<SessionAuditEntry>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct RefundSpawnResponse {
     pub session_id: String,
     pub state: SpawnSessionState,
@@ -269,7 +521,7 @@ pub struct RefundSpawnResponse {
     pub refunded_at: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnedAutomatonRecord {
     pub canister_id: String,
     pub steward_address: String,
@@ -279,37 +531,157 @@ pub struct SpawnedAutomatonRecord {
     pub parent_id: Option<String>,
     pub child_ids: Vec<String>,
     pub created_at: u64,
+    /// Exact installed ic-automaton git commit as a 40-char lowercase SHA.
     pub version_commit: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SpawnedAutomatonRegistryPage {
     pub items: Vec<SpawnedAutomatonRecord>,
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct FactoryConfigSnapshot {
     pub fee_config: FeeConfig,
     pub creation_cost_quote: CreationCostQuote,
+    pub release_broadcast_config: ReleaseBroadcastConfig,
+    pub child_runtime: AutomatonChildRuntimeConfig,
     pub pause: bool,
     pub payment_address: String,
+    pub escrow_contract_address: String,
+    pub factory_evm_address: Option<String>,
+    pub base_rpc_endpoint: Option<String>,
+    pub base_rpc_fallback_endpoint: Option<String>,
+    pub cycles_per_spawn: u64,
+    pub min_pool_balance: u64,
+    pub estimated_outcall_cycles_per_interval: u64,
     pub session_ttl_ms: u64,
     pub version_commit: String,
+    pub wasm_sha256: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactoryOperationalConfig {
+    pub cycles_per_spawn: u64,
+    pub min_pool_balance: u64,
+    pub estimated_outcall_cycles_per_interval: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactoryArtifactSnapshot {
+    pub loaded: bool,
+    pub wasm_sha256: Option<String>,
+    pub version_commit: Option<String>,
+    pub wasm_size_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct PendingArtifactUpload {
+    pub expected_sha256: String,
+    pub version_commit: String,
+    pub total_size_bytes: u64,
+    pub wasm_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ArtifactUploadStatus {
+    pub in_progress: bool,
+    pub expected_sha256: Option<String>,
+    pub version_commit: Option<String>,
+    pub total_size_bytes: Option<u64>,
+    pub received_size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactorySessionHealthCounts {
+    pub awaiting_payment: u64,
+    pub payment_detected: u64,
+    pub spawning: u64,
+    pub broadcasting_release: u64,
+    pub retryable_failed: u64,
+}
+
+impl FactorySessionHealthCounts {
+    pub fn active_total(&self) -> u64 {
+        self.awaiting_payment
+            + self.payment_detected
+            + self.spawning
+            + self.broadcasting_release
+            + self.retryable_failed
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactoryHealthSnapshot {
+    pub current_canister_balance: u128,
+    pub pause: bool,
+    pub cycles_per_spawn: u64,
+    pub min_pool_balance: u64,
+    pub estimated_outcall_cycles_per_interval: u64,
+    pub escrow_contract_address: String,
+    pub factory_evm_address: Option<String>,
+    pub artifact: FactoryArtifactSnapshot,
+    pub active_sessions: FactorySessionHealthCounts,
+    pub scheduler: FactorySchedulerHealthSnapshot,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct FactoryInitArgs {
+    pub admin_principals: Vec<Principal>,
+    pub fee_config: Option<FeeConfig>,
+    pub creation_cost_quote: Option<CreationCostQuote>,
+    pub release_broadcast_config: Option<ReleaseBroadcastConfig>,
+    pub child_runtime: Option<AutomatonChildRuntimeConfig>,
+    pub pause: bool,
+    pub payment_address: Option<String>,
+    pub escrow_contract_address: Option<String>,
+    pub base_rpc_endpoint: Option<String>,
+    pub base_rpc_fallback_endpoint: Option<String>,
+    pub cycles_per_spawn: Option<u64>,
+    pub min_pool_balance: Option<u64>,
+    pub estimated_outcall_cycles_per_interval: Option<u64>,
+    pub session_ttl_ms: Option<u64>,
+    pub version_commit: Option<String>,
+    pub wasm_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SessionAdminView {
     pub session: SpawnSession,
     pub audit: Vec<SessionAuditEntry>,
     pub quote: SpawnQuote,
     pub escrow_claim: EscrowClaim,
+    pub runtime_record: Option<AutomatonRuntimeState>,
     pub registry_record: Option<SpawnedAutomatonRecord>,
     pub pause: bool,
     pub quoted_total_amount: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum RpcFailureCategory {
+    Transport,
+    MalformedResponse,
+    ResponseTooLarge,
+    RateLimited,
+    Unavailable,
+    Upstream,
+}
+
+impl RpcFailureCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::MalformedResponse => "malformed_response",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::RateLimited => "rate_limited",
+            Self::Unavailable => "unavailable",
+            Self::Upstream => "upstream",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, CandidType, Serialize, Deserialize)]
 pub enum FactoryError {
     FactoryPaused {
         pause: bool,
@@ -352,6 +724,11 @@ pub enum FactoryError {
         session_id: String,
         expires_at: u64,
     },
+    IllegalSessionTransition {
+        session_id: String,
+        from_state: SpawnSessionState,
+        event: String,
+    },
     SessionNotRetryable {
         session_id: String,
         state: SpawnSessionState,
@@ -368,8 +745,54 @@ pub enum FactoryError {
     ControllerInvariantViolation {
         canister_id: String,
     },
+    AutomatonBootstrapVerificationFailed {
+        canister_id: String,
+        failures: Vec<String>,
+    },
     AutomatonRuntimeNotFound {
         canister_id: String,
+    },
+    MissingChildRuntimeConfig {
+        field: String,
+    },
+    ManagementCallFailed {
+        method: String,
+        message: String,
+    },
+    RpcRequestFailed {
+        operation: String,
+        endpoint: String,
+        category: RpcFailureCategory,
+        code: Option<i64>,
+        message: String,
+    },
+    InvalidVersionCommit {
+        value: String,
+    },
+    InvalidSha256 {
+        value: String,
+    },
+    ArtifactHashMismatch {
+        expected: String,
+        actual: String,
+    },
+    NoPendingArtifactUpload,
+    ArtifactUploadIncomplete {
+        expected: u64,
+        received: u64,
+    },
+    ArtifactUploadTooLarge {
+        expected: u64,
+        attempted: u64,
+    },
+    InsufficientCyclesPool {
+        available: u128,
+        required: u128,
+    },
+    InsufficientCyclesForOperation {
+        operation: String,
+        available: u128,
+        required: u128,
     },
 }
 
@@ -424,6 +847,17 @@ impl Display for FactoryError {
             } => {
                 write!(f, "session expired: {session_id} at {expires_at}")
             }
+            Self::IllegalSessionTransition {
+                session_id,
+                from_state,
+                event,
+            } => {
+                write!(
+                    f,
+                    "illegal session transition: {session_id} state={} event={event}",
+                    from_state.as_str()
+                )
+            }
             Self::SessionNotRetryable { session_id, state } => {
                 write!(
                     f,
@@ -453,8 +887,91 @@ impl Display for FactoryError {
             Self::ControllerInvariantViolation { canister_id } => {
                 write!(f, "controller invariant violation for {canister_id}")
             }
+            Self::AutomatonBootstrapVerificationFailed {
+                canister_id,
+                failures,
+            } => {
+                write!(
+                    f,
+                    "automaton bootstrap verification failed for {canister_id}: {}",
+                    failures.join("; ")
+                )
+            }
             Self::AutomatonRuntimeNotFound { canister_id } => {
                 write!(f, "automaton runtime not found: {canister_id}")
+            }
+            Self::MissingChildRuntimeConfig { field } => {
+                write!(f, "missing child runtime config: {field}")
+            }
+            Self::ManagementCallFailed { method, message } => {
+                write!(
+                    f,
+                    "management canister call failed: method={method} message={message}"
+                )
+            }
+            Self::RpcRequestFailed {
+                operation,
+                endpoint,
+                category,
+                code,
+                message,
+            } => {
+                write!(
+                    f,
+                    "rpc request failed: operation={operation} endpoint={endpoint} category={}",
+                    category.as_str()
+                )?;
+                if let Some(code) = code {
+                    write!(f, " code={code}")?;
+                }
+                write!(f, " message={message}")
+            }
+            Self::InvalidVersionCommit { value } => {
+                write!(f, "invalid version commit: {value}")
+            }
+            Self::InvalidSha256 { value } => {
+                write!(f, "invalid sha256 hex: {value}")
+            }
+            Self::ArtifactHashMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "artifact sha256 mismatch: expected={expected}, actual={actual}"
+                )
+            }
+            Self::NoPendingArtifactUpload => write!(f, "no pending artifact upload"),
+            Self::ArtifactUploadIncomplete { expected, received } => {
+                write!(
+                    f,
+                    "artifact upload incomplete: expected={expected}, received={received}"
+                )
+            }
+            Self::ArtifactUploadTooLarge {
+                expected,
+                attempted,
+            } => {
+                write!(
+                    f,
+                    "artifact upload too large: expected={expected}, attempted={attempted}"
+                )
+            }
+            Self::InsufficientCyclesPool {
+                available,
+                required,
+            } => {
+                write!(
+                    f,
+                    "insufficient cycles pool: available={available}, required={required}"
+                )
+            }
+            Self::InsufficientCyclesForOperation {
+                operation,
+                available,
+                required,
+            } => {
+                write!(
+                    f,
+                    "insufficient cycles for operation {operation}: available={available}, required={required}"
+                )
             }
         }
     }
@@ -474,6 +991,47 @@ pub fn amount_to_string(value: u128) -> String {
     value.to_string()
 }
 
+pub fn is_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+}
+
+pub fn validate_version_commit(value: &str) -> Result<(), FactoryError> {
+    if is_lower_hex(value, 40) {
+        return Ok(());
+    }
+
+    Err(FactoryError::InvalidVersionCommit {
+        value: value.to_string(),
+    })
+}
+
+pub fn validate_sha256_hex(value: &str) -> Result<(), FactoryError> {
+    if is_lower_hex(value, 64) {
+        return Ok(());
+    }
+
+    Err(FactoryError::InvalidSha256 {
+        value: value.to_string(),
+    })
+}
+
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+pub fn hex_encode_prefixed(bytes: &[u8]) -> String {
+    format!("0x{}", hex_encode(bytes))
+}
+
 pub fn hash_quote_terms(parts: &[&str]) -> String {
     const OFFSET_BASIS: u64 = 14_695_981_039_346_656_037;
     const FNV_PRIME: u64 = 1_099_511_628_211;
@@ -489,4 +1047,10 @@ pub fn hash_quote_terms(parts: &[&str]) -> String {
     }
 
     format!("{hash:016x}")
+}
+
+pub fn derive_claim_id(session_id: &str) -> String {
+    use sha3::{Digest, Keccak256};
+    let digest = Keccak256::digest(session_id.as_bytes());
+    hex_encode_prefixed(&digest)
 }

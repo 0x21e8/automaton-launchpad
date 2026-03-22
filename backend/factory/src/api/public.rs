@@ -1,13 +1,159 @@
 use crate::escrow::{claim_escrow_refund, register_escrow_claim};
 use crate::expiry::expire_spawn_session;
 use crate::retry::retry_failed_session;
-use crate::state::{read_state, record_session_audit, write_state};
+use crate::scheduler::enqueue_payment_poll;
+use crate::session_transitions::{apply_session_event_in_state, SpawnSessionEvent};
+use crate::state::{read_state, write_state};
 use crate::types::{
-    amount_to_string, hash_quote_terms, parse_amount, CreateSpawnSessionRequest,
+    amount_to_string, derive_claim_id, hash_quote_terms, parse_amount, CreateSpawnSessionRequest,
     CreateSpawnSessionResponse, FactoryError, RefundSpawnResponse, SessionAuditActor,
     SpawnPaymentInstructions, SpawnQuote, SpawnSession, SpawnSessionState,
     SpawnSessionStatusResponse, SpawnedAutomatonRegistryPage,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn deterministic_session_id_from_nonce(nonce: u64) -> String {
+    format!("{:08x}-0000-4000-8000-{:012x}", nonce as u32, nonce)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn uuid_v4_from_entropy(entropy: &[u8]) -> String {
+    let mut bytes = [0_u8; 16];
+    let copy_len = entropy.len().min(16);
+    bytes[..copy_len].copy_from_slice(&entropy[..copy_len]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+pub(crate) fn create_spawn_session_with_session_id(
+    request: CreateSpawnSessionRequest,
+    now_ms: u64,
+    session_id: String,
+) -> Result<CreateSpawnSessionResponse, FactoryError> {
+    let (session, quote) = write_state(|state| {
+        if state.pause {
+            return Err(FactoryError::FactoryPaused { pause: true });
+        }
+
+        let gross_amount_value = parse_amount(&request.gross_amount)?;
+        let platform_fee_value = parse_amount(state.fee_config.amount_for(&request.asset))?;
+        let creation_cost_value =
+            parse_amount(state.creation_cost_quote.amount_for(&request.asset))?;
+        let required_minimum = platform_fee_value + creation_cost_value;
+
+        if gross_amount_value < required_minimum {
+            return Err(FactoryError::GrossBelowRequiredMinimum {
+                provided: request.gross_amount.clone(),
+                required: amount_to_string(required_minimum),
+            });
+        }
+
+        state.next_session_nonce += 1;
+        let claim_id = derive_claim_id(&session_id);
+        let expires_at = now_ms + state.session_ttl_ms;
+        let platform_fee = amount_to_string(platform_fee_value);
+        let creation_cost = amount_to_string(creation_cost_value);
+        let net_forward_amount = amount_to_string(gross_amount_value - required_minimum);
+        let quote_terms_hash = hash_quote_terms(&[
+            &session_id,
+            &request.steward_address,
+            request.asset.as_str(),
+            &request.gross_amount,
+            &platform_fee,
+            &creation_cost,
+            &net_forward_amount,
+            &expires_at.to_string(),
+            &state.payment_address,
+        ]);
+        let payment = SpawnPaymentInstructions {
+            session_id: session_id.clone(),
+            claim_id: claim_id.clone(),
+            chain: request.config.chain.clone(),
+            asset: request.asset.clone(),
+            payment_address: state.payment_address.clone(),
+            gross_amount: request.gross_amount.clone(),
+            quote_terms_hash: quote_terms_hash.clone(),
+            expires_at,
+        };
+        let session = SpawnSession {
+            session_id: session_id.clone(),
+            claim_id,
+            steward_address: request.steward_address.clone(),
+            chain: request.config.chain.clone(),
+            asset: request.asset.clone(),
+            gross_amount: request.gross_amount.clone(),
+            platform_fee: platform_fee.clone(),
+            creation_cost: creation_cost.clone(),
+            net_forward_amount: net_forward_amount.clone(),
+            quote_terms_hash: quote_terms_hash.clone(),
+            expires_at,
+            state: SpawnSessionState::AwaitingPayment,
+            retryable: false,
+            refundable: false,
+            payment_status: crate::types::PaymentStatus::Unpaid,
+            last_scanned_block: state.payment_last_scanned_block,
+            automaton_canister_id: None,
+            automaton_evm_address: None,
+            release_tx_hash: None,
+            release_broadcast_at: None,
+            release_broadcast: None,
+            parent_id: request.parent_id.clone(),
+            child_ids: Vec::new(),
+            config: request.config.clone(),
+            created_at: now_ms,
+            updated_at: now_ms,
+        };
+        let quote = SpawnQuote {
+            session_id: session_id.clone(),
+            chain: request.config.chain.clone(),
+            asset: request.asset.clone(),
+            gross_amount: request.gross_amount.clone(),
+            platform_fee,
+            creation_cost,
+            net_forward_amount,
+            quote_terms_hash,
+            expires_at,
+            payment,
+        };
+
+        state.sessions.insert(session_id.clone(), session.clone());
+        apply_session_event_in_state(
+            state,
+            &session_id,
+            crate::types::SessionAuditActor::User,
+            now_ms,
+            SpawnSessionEvent::SessionCreated,
+            "session created",
+        )?;
+
+        Ok((session, quote))
+    })?;
+
+    register_escrow_claim(&session, now_ms);
+    enqueue_payment_poll(now_ms);
+
+    Ok(CreateSpawnSessionResponse { session, quote })
+}
 
 fn ensure_steward(caller: &str, session_id: &str) -> Result<(), FactoryError> {
     read_state(|state| {
@@ -30,108 +176,14 @@ fn ensure_steward(caller: &str, session_id: &str) -> Result<(), FactoryError> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_spawn_session(
     request: CreateSpawnSessionRequest,
     now_ms: u64,
 ) -> Result<CreateSpawnSessionResponse, FactoryError> {
-    let (session, quote) = write_state(|state| {
-        if state.paused {
-            return Err(FactoryError::FactoryPaused { pause: true });
-        }
-
-        let gross_amount_value = parse_amount(&request.gross_amount)?;
-        let platform_fee_value = parse_amount(state.fee_config.amount_for(&request.asset))?;
-        let creation_cost_value =
-            parse_amount(state.creation_cost_quote.amount_for(&request.asset))?;
-        let required_minimum = platform_fee_value + creation_cost_value;
-
-        if gross_amount_value < required_minimum {
-            return Err(FactoryError::GrossBelowRequiredMinimum {
-                provided: request.gross_amount.clone(),
-                required: amount_to_string(required_minimum),
-            });
-        }
-
-        state.next_session_nonce += 1;
-        let session_id = format!("session-{}-{}", now_ms, state.next_session_nonce);
-        let expires_at = now_ms + state.session_ttl_ms;
-        let platform_fee = amount_to_string(platform_fee_value);
-        let creation_cost = amount_to_string(creation_cost_value);
-        let net_forward_amount = amount_to_string(gross_amount_value - required_minimum);
-        let quote_terms_hash = hash_quote_terms(&[
-            &session_id,
-            &request.steward_address,
-            request.asset.as_str(),
-            &request.gross_amount,
-            &platform_fee,
-            &creation_cost,
-            &net_forward_amount,
-            &expires_at.to_string(),
-            &state.payment_address,
-        ]);
-        let payment = SpawnPaymentInstructions {
-            session_id: session_id.clone(),
-            chain: request.config.chain.clone(),
-            asset: request.asset.clone(),
-            payment_address: state.payment_address.clone(),
-            gross_amount: request.gross_amount.clone(),
-            quote_terms_hash: quote_terms_hash.clone(),
-            expires_at,
-        };
-        let session = SpawnSession {
-            session_id: session_id.clone(),
-            steward_address: request.steward_address.clone(),
-            chain: request.config.chain.clone(),
-            asset: request.asset.clone(),
-            gross_amount: request.gross_amount.clone(),
-            platform_fee: platform_fee.clone(),
-            creation_cost: creation_cost.clone(),
-            net_forward_amount: net_forward_amount.clone(),
-            quote_terms_hash: quote_terms_hash.clone(),
-            expires_at,
-            state: SpawnSessionState::AwaitingPayment,
-            retryable: false,
-            refundable: false,
-            payment_status: crate::types::PaymentStatus::Unpaid,
-            automaton_canister_id: None,
-            automaton_evm_address: None,
-            parent_id: request.parent_id.clone(),
-            child_ids: Vec::new(),
-            config: request.config.clone(),
-            created_at: now_ms,
-            updated_at: now_ms,
-            payment: payment.clone(),
-        };
-        let quote = SpawnQuote {
-            session_id: session_id.clone(),
-            chain: request.config.chain.clone(),
-            asset: request.asset.clone(),
-            gross_amount: request.gross_amount.clone(),
-            platform_fee,
-            creation_cost,
-            net_forward_amount,
-            quote_terms_hash,
-            expires_at,
-            payment,
-        };
-
-        state.sessions.insert(session_id.clone(), session.clone());
-        record_session_audit(
-            state,
-            &session_id,
-            None,
-            SpawnSessionState::AwaitingPayment,
-            SessionAuditActor::User,
-            now_ms,
-            "session created",
-        );
-
-        Ok((session, quote))
-    })?;
-
-    register_escrow_claim(&session, now_ms);
-
-    Ok(CreateSpawnSessionResponse { session, quote })
+    let session_id =
+        read_state(|state| deterministic_session_id_from_nonce(state.next_session_nonce + 1));
+    create_spawn_session_with_session_id(request, now_ms, session_id)
 }
 
 pub fn get_spawn_session(session_id: &str) -> Result<SpawnSessionStatusResponse, FactoryError> {
@@ -141,9 +193,14 @@ pub fn get_spawn_session(session_id: &str) -> Result<SpawnSessionStatusResponse,
                 session_id: session_id.to_string(),
             }
         })?;
+        let payment = SpawnPaymentInstructions::from_session(&session, &state.payment_address);
         let audit = state.audit_log.get(session_id).cloned().unwrap_or_default();
 
-        Ok(SpawnSessionStatusResponse { session, audit })
+        Ok(SpawnSessionStatusResponse {
+            session,
+            payment,
+            audit,
+        })
     })
 }
 
@@ -153,7 +210,6 @@ pub fn retry_spawn_session(
     now_ms: u64,
 ) -> Result<SpawnSessionStatusResponse, FactoryError> {
     ensure_steward(caller, session_id)?;
-    let _ = expire_spawn_session(session_id, now_ms)?;
     retry_failed_session(
         session_id,
         SessionAuditActor::User,
@@ -182,18 +238,16 @@ pub fn list_spawned_automatons(
     }
 
     read_state(|state| {
+        use std::collections::Bound;
+
         let mut items: Vec<crate::types::SpawnedAutomatonRecord> = Vec::new();
         let mut next_cursor = None;
-        let mut seen_cursor = cursor.is_none();
 
-        for (canister_id, record) in &state.registry {
-            if !seen_cursor {
-                if Some(canister_id.as_str()) == cursor {
-                    seen_cursor = true;
-                }
-                continue;
-            }
-
+        let start = match cursor {
+            Some(c) => Bound::Excluded(c.to_string()),
+            None => Bound::Unbounded,
+        };
+        for (_, record) in state.registry.range((start, Bound::Unbounded)) {
             if items.len() == limit {
                 next_cursor = Some(
                     items
@@ -204,7 +258,6 @@ pub fn list_spawned_automatons(
                 );
                 break;
             }
-
             items.push(record.clone());
         }
 
