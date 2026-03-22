@@ -2,17 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUTOMATON_TIERS,
+  MONOLOGUE_ENTRY_CATEGORIES,
+  MONOLOGUE_ENTRY_IMPORTANCE,
   MONOLOGUE_ENTRY_TYPES,
   type AutomatonListResponse
-} from "../src/automaton.js";
-import { CATALOG_ENTRY_STATUSES } from "../src/catalog.js";
+} from "../src/automaton.ts";
+import { CATALOG_ENTRY_STATUSES } from "../src/catalog.ts";
 import {
   AUTOMATON_EVENT_TYPES,
   SPAWN_EVENT_TYPES,
   type RealtimeEvent
-} from "../src/events.js";
+} from "../src/events.ts";
 import {
-  type EscrowPaymentRecord,
+  deriveClaimId,
   MINIMUM_GROSS_PAYMENT_USD,
   PAYMENT_STATUSES,
   SESSION_AUDIT_ACTORS,
@@ -20,7 +22,7 @@ import {
   SUPPORTED_SPAWN_ASSETS,
   type SpawnSessionDetail,
   type SpawnSessionStatusResponse
-} from "../src/spawn.js";
+} from "../src/spawn.ts";
 
 describe("shared contracts", () => {
   it("tracks the locked spawn session lifecycle", () => {
@@ -28,7 +30,7 @@ describe("shared contracts", () => {
       "awaiting_payment",
       "payment_detected",
       "spawning",
-      "funding_automaton",
+      "broadcasting_release",
       "complete",
       "failed",
       "expired"
@@ -37,7 +39,7 @@ describe("shared contracts", () => {
 
   it("keeps the minimum gross payment floor at fifty dollars", () => {
     expect(MINIMUM_GROSS_PAYMENT_USD).toBe(50);
-    expect(SUPPORTED_SPAWN_ASSETS).toEqual(["eth", "usdc"]);
+    expect(SUPPORTED_SPAWN_ASSETS).toEqual(["usdc"]);
     expect(PAYMENT_STATUSES).toEqual(["unpaid", "partial", "paid", "refunded"]);
   });
 
@@ -49,12 +51,19 @@ describe("shared contracts", () => {
       "out_of_cycles"
     ]);
     expect(MONOLOGUE_ENTRY_TYPES).toEqual(["thought", "action"]);
-    expect(SESSION_AUDIT_ACTORS).toEqual([
-      "system",
-      "user",
-      "admin",
-      "escrow"
+    expect(MONOLOGUE_ENTRY_CATEGORIES).toEqual([
+      "observe",
+      "decide",
+      "act",
+      "message",
+      "error"
     ]);
+    expect(MONOLOGUE_ENTRY_IMPORTANCE).toEqual([
+      "low",
+      "medium",
+      "high"
+    ]);
+    expect(SESSION_AUDIT_ACTORS).toEqual(["system", "user", "admin"]);
     expect(CATALOG_ENTRY_STATUSES).toEqual(["available", "coming_soon"]);
   });
 
@@ -76,16 +85,19 @@ describe("shared contracts", () => {
   });
 
   it("keeps the shared API shapes compilable for later milestones", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const claimId = "0x2f779c94a35dceba72fe536ce28c5fea7566753044cdf9da29f6402ea964b7f9";
     const status: SpawnSessionStatusResponse = {
       session: {
-        sessionId: "sess_123",
+        sessionId,
+        claimId,
         stewardAddress: "0xabc",
         chain: "base",
-        asset: "eth",
-        grossAmount: "1000000000000000000",
-        platformFee: "10000000000000000",
-        creationCost: "20000000000000000",
-        netForwardAmount: "970000000000000000",
+        asset: "usdc",
+        grossAmount: "1000000000",
+        platformFee: "1000000",
+        creationCost: "2000000",
+        netForwardAmount: "997000000",
         quoteTermsHash: "0xdeadbeef",
         expiresAt: 1_710_000_000_000,
         state: "awaiting_payment",
@@ -94,6 +106,8 @@ describe("shared contracts", () => {
         paymentStatus: "unpaid",
         automatonCanisterId: null,
         automatonEvmAddress: null,
+        releaseTxHash: null,
+        releaseBroadcastAt: null,
         parentId: null,
         childIds: [],
         config: {
@@ -101,16 +115,28 @@ describe("shared contracts", () => {
           risk: 3,
           strategies: ["yield-farming"],
           skills: ["portfolio-reporting"],
-          openRouterApiKey: null,
-          model: null,
-          braveSearchApiKey: null
+          provider: {
+            openRouterApiKey: null,
+            model: null,
+            braveSearchApiKey: null
+          }
         },
         createdAt: 1_710_000_000_000,
         updatedAt: 1_710_000_000_000
       },
+      payment: {
+        sessionId,
+        claimId,
+        quoteTermsHash: "0xdeadbeef",
+        paymentAddress: "0xfeed",
+        chain: "base",
+        asset: "usdc",
+        grossAmount: "1000000000",
+        expiresAt: 1_710_000_000_000
+      },
       audit: [
         {
-          sessionId: "sess_123",
+          sessionId,
           timestamp: 1_710_000_000_000,
           fromState: null,
           toState: "awaiting_payment",
@@ -119,33 +145,18 @@ describe("shared contracts", () => {
         }
       ]
     };
-    const escrow: EscrowPaymentRecord = {
-      sessionId: "sess_123",
-      quoteTermsHash: "0xdeadbeef",
-      paymentAddress: "0xfeed",
-      chain: "base",
-      asset: "eth",
-      requiredGrossAmount: "1000000000000000000",
-      paidAmount: "1000000000000000000",
-      paymentStatus: "paid",
-      refundable: false,
-      refundedAt: null,
-      createdAt: 1_710_000_000_000,
-      updatedAt: 1_710_000_000_001
-    };
     const detail: SpawnSessionDetail = {
       ...status,
-      escrow,
       registryRecord: {
         canisterId: "rdmx6-jaaaa-aaaaa-aaadq-cai",
         stewardAddress: "0xabc",
         evmAddress: "0x1234",
         chain: "base",
-        sessionId: "sess_123",
+        sessionId,
         parentId: null,
         childIds: [],
         createdAt: 1_710_000_000_010,
-        versionCommit: "abcdef1234567890"
+        versionCommit: "abcdef1234567890abcdef1234567890abcdef12"
       }
     };
 
@@ -195,7 +206,8 @@ describe("shared contracts", () => {
     };
 
     expect(status.audit).toHaveLength(1);
-    expect(detail.escrow?.paymentStatus).toBe("paid");
+    expect(deriveClaimId(sessionId)).toBe(claimId);
+    expect(detail.payment.paymentAddress).toBe("0xfeed");
     expect(listResponse.automatons[0]?.name).toBe("ALPHA-42");
     expect(event.type).toBe("update");
   });

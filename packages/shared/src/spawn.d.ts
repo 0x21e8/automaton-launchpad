@@ -1,9 +1,10 @@
 export declare const SUPPORTED_SPAWN_CHAINS: readonly ["base"];
-export declare const SUPPORTED_SPAWN_ASSETS: readonly ["eth", "usdc"];
-export declare const SPAWN_SESSION_STATES: readonly ["awaiting_payment", "payment_detected", "spawning", "funding_automaton", "complete", "failed", "expired"];
+export declare const SUPPORTED_SPAWN_ASSETS: readonly ["usdc"];
+export declare const SPAWN_SESSION_STATES: readonly ["awaiting_payment", "payment_detected", "spawning", "broadcasting_release", "complete", "failed", "expired"];
 export declare const PAYMENT_STATUSES: readonly ["unpaid", "partial", "paid", "refunded"];
-export declare const SESSION_AUDIT_ACTORS: readonly ["system", "user", "admin", "escrow"];
+export declare const SESSION_AUDIT_ACTORS: readonly ["system", "user", "admin"];
 export declare const MINIMUM_GROSS_PAYMENT_USD = 50;
+export declare const VERSION_COMMIT_PATTERN: RegExp;
 export type SpawnChain = (typeof SUPPORTED_SPAWN_CHAINS)[number];
 export type SpawnAsset = (typeof SUPPORTED_SPAWN_ASSETS)[number];
 export type SpawnSessionState = (typeof SPAWN_SESSION_STATES)[number];
@@ -14,14 +15,16 @@ export interface ProviderConfig {
     model: string | null;
     braveSearchApiKey: string | null;
 }
-export interface SpawnConfig extends ProviderConfig {
+export interface SpawnConfig {
     chain: SpawnChain;
     risk: number;
     strategies: string[];
     skills: string[];
+    provider: ProviderConfig;
 }
 export interface SpawnPaymentInstructions {
     sessionId: string;
+    claimId: string;
     chain: SpawnChain;
     asset: SpawnAsset;
     paymentAddress: string;
@@ -43,6 +46,7 @@ export interface SpawnQuote {
 }
 export interface SpawnSession {
     sessionId: string;
+    claimId: string;
     stewardAddress: string;
     chain: SpawnChain;
     asset: SpawnAsset;
@@ -58,6 +62,8 @@ export interface SpawnSession {
     paymentStatus: PaymentStatus;
     automatonCanisterId: string | null;
     automatonEvmAddress: string | null;
+    releaseTxHash: string | null;
+    releaseBroadcastAt: number | null;
     parentId: string | null;
     childIds: string[];
     config: SpawnConfig;
@@ -100,10 +106,12 @@ export interface SessionAuditEntry {
 }
 export interface SpawnSessionStatusResponse {
     session: SpawnSession;
+    payment: SpawnPaymentInstructions;
     audit: SessionAuditEntry[];
 }
 export interface EscrowPaymentRecord {
     sessionId: string;
+    claimId: string;
     quoteTermsHash: string;
     paymentAddress: string;
     chain: SpawnChain;
@@ -132,7 +140,7 @@ export interface SpawnedAutomatonRegistryPage {
     nextCursor: string | null;
 }
 export interface SpawnSessionDetail extends SpawnSessionStatusResponse {
-    escrow: EscrowPaymentRecord | null;
     registryRecord: SpawnedAutomatonRecord | null;
 }
+export declare function deriveClaimId(sessionId: string): string;
 //# sourceMappingURL=spawn.d.ts.map

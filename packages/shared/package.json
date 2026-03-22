@@ -15,9 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "lint": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.json --noEmit",
+    "build": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.build.json",
+    "test": "sh ../../scripts/with-repo-node.sh vitest run"
   }
 }
-

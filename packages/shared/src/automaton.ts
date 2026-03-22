@@ -14,10 +14,20 @@ export const AUTOMATON_TIERS = [
 ] as const;
 
 export const MONOLOGUE_ENTRY_TYPES = ["thought", "action"] as const;
+export const MONOLOGUE_ENTRY_CATEGORIES = [
+  "observe",
+  "decide",
+  "act",
+  "message",
+  "error"
+] as const;
+export const MONOLOGUE_ENTRY_IMPORTANCE = ["low", "medium", "high"] as const;
 
 export type ChainSlug = (typeof SUPPORTED_CHAIN_SLUGS)[number];
 export type AutomatonTier = (typeof AUTOMATON_TIERS)[number];
 export type MonologueEntryType = (typeof MONOLOGUE_ENTRY_TYPES)[number];
+export type MonologueEntryCategory = (typeof MONOLOGUE_ENTRY_CATEGORIES)[number];
+export type MonologueEntryImportance = (typeof MONOLOGUE_ENTRY_IMPORTANCE)[number];
 
 export interface GridPosition {
   x: number;
@@ -135,7 +145,10 @@ export interface MonologueEntry {
   timestamp: number;
   turnId: string;
   type: MonologueEntryType;
+  headline: string;
   message: string;
+  category: MonologueEntryCategory;
+  importance: MonologueEntryImportance;
   agentState: string;
   toolCallCount: number;
   durationMs: number | null;

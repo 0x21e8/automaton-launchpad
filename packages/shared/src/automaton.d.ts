@@ -1,9 +1,13 @@
 export declare const SUPPORTED_CHAIN_SLUGS: readonly ["base", "ethereum", "arbitrum", "optimism", "polygon"];
 export declare const AUTOMATON_TIERS: readonly ["normal", "low", "critical", "out_of_cycles"];
 export declare const MONOLOGUE_ENTRY_TYPES: readonly ["thought", "action"];
+export declare const MONOLOGUE_ENTRY_CATEGORIES: readonly ["observe", "decide", "act", "message", "error"];
+export declare const MONOLOGUE_ENTRY_IMPORTANCE: readonly ["low", "medium", "high"];
 export type ChainSlug = (typeof SUPPORTED_CHAIN_SLUGS)[number];
 export type AutomatonTier = (typeof AUTOMATON_TIERS)[number];
 export type MonologueEntryType = (typeof MONOLOGUE_ENTRY_TYPES)[number];
+export type MonologueEntryCategory = (typeof MONOLOGUE_ENTRY_CATEGORIES)[number];
+export type MonologueEntryImportance = (typeof MONOLOGUE_ENTRY_IMPORTANCE)[number];
 export interface GridPosition {
     x: number;
     y: number;
@@ -110,7 +114,10 @@ export interface MonologueEntry {
     timestamp: number;
     turnId: string;
     type: MonologueEntryType;
+    headline: string;
     message: string;
+    category: MonologueEntryCategory;
+    importance: MonologueEntryImportance;
     agentState: string;
     toolCallCount: number;
     durationMs: number | null;
