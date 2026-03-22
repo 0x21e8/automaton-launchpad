@@ -6,3 +6,8 @@ target/
 .ark/
 .DS_Store
 apps/indexer/data/*.sqlite*
+evm/cache/
+evm/out/
+tmp/
+.claude
+.icp

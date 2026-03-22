@@ -1,5 +1,0 @@
-==> test -f backend/factory/src/escrow.rs
-==> test -f backend/factory/src/spawn.rs
-==> test -f backend/factory/src/controllers.rs
-==> test -f backend/factory/src/init.rs
-==> rg "@fastify/websocket|better-sqlite3" apps/indexer/package.json

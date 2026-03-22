@@ -1,110 +1,328 @@
 # automaton-launchpad
 
-Monorepo for the local `ic-automaton` launchpad experience.
+A self-service launchpad for spawning autonomous [ic-automaton](https://github.com/domwoe/ic-automaton) agents on the Internet Computer. Users connect a wallet, pay in USDC on Base, and the factory canister creates a fully provisioned child automaton canister — complete with EVM address, on-chain configuration, and release of escrowed funds.
 
 ## What is in this repo
 
-- `apps/web`: React + Vite frontend
-- `apps/indexer`: Fastify API + WebSocket service backed by SQLite
-- `packages/shared`: shared TypeScript contracts
-- `backend/factory`: Rust factory crate
+| Layer | Path | Tech | Purpose |
+|-------|------|------|---------|
+| **Factory canister** | `backend/factory/` | Rust · IC CDK · stable-structures | On-chain spawn orchestrator: session lifecycle, escrow polling, child canister creation, threshold ECDSA release transactions |
+| **Web app** | `apps/web/` | React · Vite · TypeScript | Spawn wizard UI, automaton canvas, drawer detail view, CLI command panel |
+| **Indexer** | `apps/indexer/` | Fastify · SQLite · WebSocket | Polls factory canister, normalizes data, serves REST + realtime updates to the frontend |
+| **Shared contracts** | `packages/shared/` | TypeScript | Shared types and validation between web and indexer |
+| **EVM contracts** | `evm/` | Solidity · Foundry | MockUSDC and LocalEscrow for local development of the Base payment path |
+
+## Architecture
+
+```
+                         ┌──────────────────┐
+                         │   Web Frontend   │
+                         │   (React/Vite)   │
+                         └────────┬─────────┘
+                                  │ REST + WebSocket
+                                  ▼
+                         ┌──────────────────┐
+                         │    Indexer        │
+                         │ (Fastify/SQLite) │
+                         └────────┬─────────┘
+                                  │ Candid (agent-js)
+                                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Factory Canister (Rust)                   │
+│                                                             │
+│  Spawn Session FSM:                                         │
+│  AwaitingPayment → PaymentDetected → Spawning               │
+│      → BroadcastingRelease → Complete                       │
+│                                                             │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────────┐      │
+│  │ Scheduler  │  │  Escrow    │  │  EVM / ECDSA     │      │
+│  │ (30s tick) │  │  Poller    │  │  Release Signer  │      │
+│  └────────────┘  └────────────┘  └──────────────────┘      │
+│                                                             │
+│  Stable Memory: sessions, claims, registry, scheduler jobs  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                 ▼
+     ┌──────────────┐  ┌────────────┐  ┌──────────────────┐
+     │ Child        │  │  Base L2   │  │  IC Management   │
+     │ Automatons   │  │ (Escrow +  │  │  Canister        │
+     │ (ic-automaton│  │  USDC)     │  │  (create/install │
+     │  canisters)  │  │            │  │   /update_settings)
+     └──────────────┘  └────────────┘  └──────────────────┘
+```
+
+## Project structure
+
+```
+automaton-launchpad/
+├── backend/factory/
+│   ├── src/
+│   │   ├── lib.rs              # Canister entrypoint, heartbeat, Candid API
+│   │   ├── state.rs            # Stable storage layer (StableBTreeMap ↔ heap)
+│   │   ├── types.rs            # Shared domain types, Candid-serializable
+│   │   ├── spawn.rs            # Spawn execution: create → install → verify → release
+│   │   ├── escrow.rs           # Base escrow payment polling and reconciliation
+│   │   ├── evm.rs              # EIP-1559 tx construction, ECDSA signing, release broadcast
+│   │   ├── base_rpc.rs         # JSON-RPC client for Base (eth_blockNumber, eth_getLogs, eth_sendRawTransaction)
+│   │   ├── scheduler.rs        # Job scheduler with backoff, lease, retry
+│   │   ├── session_transitions.rs  # Session state machine transitions + audit
+│   │   ├── controllers.rs      # Canister controller handoff (factory → child)
+│   │   ├── cycles.rs           # Cycle cost guards for outcalls and signing
+│   │   ├── init.rs             # Child automaton initialization and EVM address derivation
+│   │   ├── expiry.rs           # Session TTL enforcement
+│   │   ├── retry.rs            # Failed session retry logic
+│   │   └── api/
+│   │       ├── admin.rs        # Admin endpoints (health, runtime, artifact, fees)
+│   │       └── public.rs       # Public endpoints (create session, get status, list registry)
+│   ├── factory.did             # Candid interface definition
+│   └── Cargo.toml
+├── apps/web/                   # React SPA
+│   └── src/
+│       ├── App.tsx             # Shell: header, canvas, drawer, spawn wizard
+│       ├── components/
+│       │   ├── spawn/          # SpawnWizard (6-step modal), FundStep, etc.
+│       │   ├── drawer/         # AutomatonDrawer, MonologuePanel, CommandLinePanel
+│       │   └── grid/           # AutomatonCanvas
+│       ├── hooks/              # useAutomatonDetail, useSpawnSession, useCommandSession
+│       ├── lib/                # CLI registry, wallet helpers, spawn payment logic
+│       └── styles.css          # Single flat CSS file (BEM-ish)
+├── apps/indexer/               # Fastify + SQLite service
+│   └── src/
+│       ├── server.ts           # HTTP + WebSocket server
+│       ├── config.ts           # Typed configuration with env overrides
+│       ├── polling/            # Factory canister polling loop
+│       ├── integrations/       # Candid client adapter
+│       ├── normalize/          # Raw canister data → domain model
+│       ├── store/              # SQLite schema and queries
+│       └── routes/             # REST endpoints (health, spawn-sessions)
+├── packages/shared/            # Shared TypeScript types
+├── evm/                        # Foundry workspace
+│   ├── src/MockUSDC.sol        # 6-decimal mock USDC for local testing
+│   ├── src/LocalEscrow.sol     # Escrow: deposit(bytes32,uint256), release(bytes32,address)
+│   └── test/LocalEscrow.t.sol  # Forge tests
+├── scripts/                    # Dev tooling
+├── icp.yaml                    # ICP canister build & deployment config
+└── package.json                # npm workspaces root
+```
 
 ## Prerequisites
 
-- Node.js `>=20.19.0`
-- npm `>=10`
-- Rust toolchain if you want to build or test `backend/factory`
+- **Node.js** `>=20.19.0` and **npm** `>=10`
+- **Rust** toolchain (for building and testing `backend/factory`)
+- **Foundry** (`forge`, `cast`, `anvil`) for the local EVM escrow loop
+- **icp-cli** for canister deployment (`icp build`, `icp canister install`)
 
-## Install dependencies
+## Quick start
 
 ```bash
+git clone <repo-url>
+cd automaton-launchpad
+
+# Install JS dependencies
 npm install
-```
 
-## Start locally
-
-The simplest local entrypoint is:
-
-```bash
+# Start web + indexer in dev mode
 npm run dev
 ```
 
 This starts:
 
-- the indexer with `tsx watch`
+- the indexer via `tsx watch` on `http://127.0.0.1:3001`
 - the Vite frontend on `http://127.0.0.1:5173`
-- the frontend wired to the indexer at `http://127.0.0.1:3001`
 
-Open `http://127.0.0.1:5173`.
+Open `http://127.0.0.1:5173`. The app works with an empty database — you get the full UI shell with an empty automaton list.
 
-### Run each app separately
+For the full local spawn setup, including Base-fork Anvil, canonical Base USDC mock injection,
+launchpad escrow, shared `ic-automaton` inbox deployment, real child Wasm upload, wallet seeding,
+and web/indexer wiring, use [ralph/notes/local-launchpad-runbook.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/local-launchpad-runbook.md).
 
-Indexer:
+### Run each service separately
 
 ```bash
+# Indexer only
 npm run dev:indexer
+
+# Web only (point at running indexer)
+VITE_INDEXER_BASE_URL=http://127.0.0.1:3001 npm run dev:web
 ```
 
-Web app:
+### Build and test the factory canister
 
 ```bash
-VITE_INDEXER_BASE_URL=http://127.0.0.1:3001 \
-npm run dev:web
+# Run all 56 unit tests
+cargo test -p factory
+
+# Type-check and lint
+cargo fmt --check -p factory
+cargo clippy -p factory --all-targets -- -D warnings
+
+# Build the WASM canister
+icp build
 ```
 
-Useful optional environment variables for the indexer:
+## Configuration
 
-- `HOST`: defaults to `0.0.0.0`
-- `PORT`: defaults to `3001`
-- `INDEXER_DB_PATH`: override the SQLite file path
-- `INDEXER_FACTORY_CANISTER_ID`: factory canister ID exposed by `/health`
-- `INDEXER_INGESTION_NETWORK_TARGET`: override `network.target` for deployment/runtime selection
-- `INDEXER_INGESTION_LOCAL_HOST`: override `network.local.host` when pointing at a replica host
-- `INDEXER_INGESTION_LOCAL_PORT`: override `network.local.port` when pointing at a replica port
+### Indexer environment variables
 
-Indexer targeting defaults come from the typed config file at `apps/indexer/src/indexer.config.ts`:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Indexer bind address |
+| `PORT` | `3001` | Indexer port |
+| `INDEXER_DB_PATH` | (in-memory) | SQLite file path |
+| `INDEXER_FACTORY_CANISTER_ID` | from config | Factory canister ID for `/health` |
+| `INDEXER_INGESTION_CANISTER_IDS` | from config | Comma-separated seed canister ID override |
+| `INDEXER_INGESTION_NETWORK_TARGET` | from config | Network target (`local` or `mainnet`) |
+| `INDEXER_INGESTION_LOCAL_HOST` | from config | Local replica host |
+| `INDEXER_INGESTION_LOCAL_PORT` | from config | Local replica port |
 
-- `canisterIds`
-- `network.target`
-- `network.local.host`
-- `network.local.port`
+Indexer targeting defaults come from `apps/indexer/src/indexer.config.ts`.
 
-The indexer derives `icHost` from that config. Runtime env overrides are limited to the deployment-facing network selector and local replica address; the canister ID list still comes from the typed config file.
+### Web environment variables
 
-Useful optional environment variables for the root runner:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_INDEXER_BASE_URL` | `http://127.0.0.1:3001` | Indexer URL for API calls |
+| `WEB_HOST` | `127.0.0.1` | Dev server bind address |
+| `WEB_PORT` | `5173` | Dev server port |
 
-- `WEB_HOST`: defaults to `127.0.0.1`
-- `WEB_PORT`: defaults to `5173`
-- `INDEXER_HOST`: defaults to `127.0.0.1`
-- `INDEXER_PORT`: defaults to `3001`
-- `VITE_INDEXER_BASE_URL`: defaults to `http://127.0.0.1:3001`
+### Factory canister init args
 
-Health check:
+The factory canister accepts `FactoryInitArgs` at install time. Key fields:
 
-```bash
-curl http://127.0.0.1:3001/health
+| Argument | Description |
+|----------|-------------|
+| `payment_address` | EVM address that receives spawn payments |
+| `escrow_contract_address` | Deployed escrow contract on Base |
+| `base_rpc_endpoint` | Primary Base JSON-RPC URL |
+| `base_rpc_fallback_endpoint` | Fallback RPC URL |
+| `child_runtime` | Child `ic-automaton` init defaults used during `install_code` |
+| `fee_config` | Platform fee in USDC (6 decimals) |
+| `creation_cost_quote` | Canister creation cost in USDC |
+| `admin_principals` | Set of admin principal IDs |
+| `session_ttl_ms` | Session timeout (default: 30 minutes) |
+| `cycles_per_spawn` | Cycles allocated per child canister |
+
+For a real child spawn, `child_runtime.ecdsa_key_name`, `child_runtime.evm_chain_id`, and
+`child_runtime.evm_rpc_url` must be configured before the factory can install a child canister.
+
+## Spawn session lifecycle
+
+```
+User creates session
+        │
+        ▼
+  AwaitingPayment ──── (TTL expires) ──── Expired
+        │                                     │
+   (USDC deposited                     (refund available)
+    on Base)
+        │
+        ▼
+  PaymentDetected
+        │
+        ▼
+     Spawning ─────── (canister created, WASM installed, verified)
+        │
+        ▼
+BroadcastingRelease ── (threshold ECDSA signs EIP-1559 release tx)
+        │
+        ▼
+     Complete ──────── (child automaton live, escrowed funds released)
 ```
 
-## Notes about the current local setup
+Failed sessions at any stage can be retried by the steward or admin.
 
-- `apps/indexer` runs directly from TypeScript via `tsx watch src/server.ts`.
-- If `VITE_INDEXER_BASE_URL` is not set when running the web app separately, the frontend will request `/api/...` from the Vite origin instead of the indexer.
-- The app can start with an empty indexer database; you will still get the UI shell and an empty automaton list.
+## Local escrow loop
 
-## Useful commands
+For end-to-end local testing of the Base payment path:
 
 ```bash
+# 1. Start a local Base-like EVM node (chain ID 8453)
+sh ./scripts/start-local-evm.sh --background
+
+# 2. Deploy canonical Base USDC mock + escrow contract
+sh ./scripts/deploy-local-escrow.sh
+# → writes tmp/local-escrow-deployment.json
+
+# 3. Seed the fixed browser wallet used by the manual E2E flow
+npm run evm:seed-wallet
+# → writes tmp/local-wallet-seed.json
+
+# 4. Generate factory init args from deployment + child runtime defaults
+node ./scripts/render-factory-local-init-args.mjs
+
+# 5. Install factory with local escrow config
+icp build
+icp canister create factory -e local
+icp canister install factory -e local --mode reinstall \
+  --args "$(node ./scripts/render-factory-local-init-args.mjs)"
+
+# 6. Upload a real child artifact built from the sibling ic-automaton repo
+CHILD_WASM_PATH=/absolute/path/to/backend.wasm.gz \
+CHILD_VERSION_COMMIT=$(git -C /path/to/ic-automaton rev-parse HEAD) \
+npm run factory:upload-artifact
+
+# 7. Smoke-test the full deposit → release path
+sh ./scripts/smoke-local-escrow.sh
+# → writes tmp/local-escrow-smoke.json
+```
+
+The smoke script mints MockUSDC-compatible balances at the configured USDC token address, deposits into escrow, verifies the `Deposited` event is discoverable via `eth_getLogs`, and calls `release`.
+On a Base fork that means the scripts inject `MockUSDC` bytecode at canonical Base USDC before minting and approvals.
+The wallet seed script funds `0xCDE2d94d3A757c9d8006258a123D3204E278591b` with ETH and seeded USDC,
+derives the local factory release-signer address via `derive_factory_evm_address`, tops that
+signer up with ETH on Anvil, and prints the local Base-fork network settings needed for the
+browser wallet.
+
+## Troubleshooting
+
+### Local ICP says it is running, but the replica is actually dead
+
+How it manifested:
+
+- `icp network start --background` returned `Error: network 'local' is already running`
+- `icp network ping local` failed with errors like:
+  - `Error: no descriptor found for port 8000`
+  - `Error: An error happened during communication with the replica: error sending request for url (http://localhost:8000/api/v2/status)`
+- nothing useful was listening on `127.0.0.1:8000`, or only a stale launcher process remained after `pocket-ic` had already died
+
+What happened:
+
+- the local `icp-cli-network-launcher` / `pocket-ic` process crashed or was interrupted
+- stale state was left behind in this repo’s `.icp/cache/networks/local` and in the shared `ICP_HOME` port descriptors
+- after that, `icp` believed the project-local network still existed even though the replica was gone
+
+Quick resolve:
+
+```bash
+# 1. Stop any stale launcher / pocket-ic processes if they still exist
+pkill -f icp-cli-network-launcher || true
+pkill -f pocket-ic || true
+
+# 2. Clear the broken local-network metadata
+rm -rf .icp/cache/networks/local
+rm -f "${ICP_HOME:-$HOME/.icp}/port-descriptors/8000.json"
+rm -f "${ICP_HOME:-$HOME/.icp}/port-descriptors/8000.lock"
+
+# 3. Start the local network again and verify it
+ICP_HOME=/tmp/icp-home icp network start --background
+ICP_HOME=/tmp/icp-home icp network ping local
+```
+
+If you are using a non-default `ICP_HOME`, keep it consistent for every `icp` command in the session. Mixed homes can make the network look missing or make canister IDs disappear even though the replica is healthy.
+
+## Testing
+
+```bash
+# All JS tests (shared + indexer + web)
 npm test
+
+# Factory Rust tests
+cargo test -p factory
+
+# Solidity contract tests
+npm run evm:test
+
+# Full lint pass
 npm run lint
-cargo test -p factory
 ```
-
-## Factory crate
-
-The Rust factory code lives in `backend/factory` and can be tested independently:
-
-```bash
-cargo test -p factory
-```
-
-This README only documents the local web + indexer loop. It does not cover ICP deployment or wiring a live factory canister into the UI.

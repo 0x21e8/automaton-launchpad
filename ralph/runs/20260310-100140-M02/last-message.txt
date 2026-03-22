@@ -1,7 +1,0 @@
-COMPLETED
-
-Updated the shared contract layer in [automaton.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/src/automaton.ts), [spawn.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/src/spawn.ts), [events.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/src/events.ts), [catalog.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/src/catalog.ts), and [contracts.test.ts](/Users/domwoe/Dev/projects/automaton-launchpad/packages/shared/test/contracts.test.ts). I also wrote the required milestone artifacts in [M02.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M02.md) and appended the new handoff section in [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation passed for the full M02 suite: the required `test -f` checks, `rg "SpawnSession|SpawnSessionState|quoteTermsHash" packages/shared/src/spawn.ts`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory`.
-
-No blocker should stop the next loop iteration. One spec nuance is recorded in the report and handoff: `SPEC.md` uses `corePattern` while `SPEC-INDEXER.md` uses `corePatternIndex`, so the shared contracts currently expose both until a later milestone standardizes the public payload.

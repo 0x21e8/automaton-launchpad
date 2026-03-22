@@ -1,5 +1,0 @@
-COMPLETED
-
-No application code changes were required. The milestone work was verification plus Ralph artifact alignment in [ralph/reports/M12.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M12.md) and [ralph/notes/rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation summary: `rg "spawn session|quoteTermsHash|retryable|refundable" -g '!ralph/**' .` passed with expected matches; `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory` all passed. Blocker for the next loop iteration: none.

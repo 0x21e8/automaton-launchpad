@@ -1,7 +1,0 @@
-COMPLETED
-
-Implemented the retry/expiry/refund lifecycle in [retry.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/retry.rs), [expiry.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/expiry.rs), [escrow.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/escrow.rs), [public.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/api/public.rs), [admin.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/api/admin.rs), [spawn.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/spawn.rs), [state.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/state.rs), [types.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/types.rs), and [lib.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/lib.rs). The milestone report is in [M09.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M09.md) and the rolling handoff was appended in [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation summary: `test -f backend/factory/src/retry.rs`, `test -f backend/factory/src/expiry.rs`, `rg "retryable|refundable|expired|openRouterApiKey|braveSearchApiKey" backend/factory/src`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory` all passed.
-
-No blocker should stop the next loop iteration.

@@ -1,0 +1,16 @@
+canisters:
+  - name: factory
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: factory
+        candid: backend/factory/factory.did
+
+environments:
+  - name: local
+    network: local
+    canisters: [factory]
+
+  - name: ic
+    network: ic
+    canisters: [factory]

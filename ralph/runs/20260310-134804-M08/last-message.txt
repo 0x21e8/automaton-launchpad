@@ -1,7 +1,0 @@
-COMPLETED
-
-Key files changed: [server.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/server.ts), [realtime.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/routes/realtime.ts), [sqlite.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/store/sqlite.ts), [events.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/ws/events.ts), [M08.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M08.md), and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md). The factory escrow/spawn files remained in place and validated; the indexer is now using `@fastify/websocket` and `better-sqlite3` on the locked route/store surface.
-
-Validation summary: all required commands passed, including the four `test -f` checks, both `rg "@fastify/websocket|better-sqlite3"` checks, `rg "sessionId|funding_automaton|controller|quoteTermsHash" backend/factory/src`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory`.
-
-Blocker for next loop iteration: none.

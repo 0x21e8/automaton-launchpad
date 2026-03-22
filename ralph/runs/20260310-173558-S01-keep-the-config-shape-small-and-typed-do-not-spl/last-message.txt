@@ -1,7 +1,0 @@
-COMPLETED
-
-This checklist item was already satisfied in the runtime: the indexer keeps targeting under one typed `ingestion` object in [apps/indexer/src/config.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/config.ts) backed by [apps/indexer/src/indexer.config.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/indexer.config.ts), and `icHost` is derived from that config instead of being split across separate env vars. I cleaned up the stale operator docs in [README.md](/Users/domwoe/Dev/projects/automaton-launchpad/README.md) so they no longer advertise the old split targeting env vars.
-
-I wrote the required checklist report at [ralph/reports/checklists/S01-keep-the-config-shape-small-and-typed-do-not-spl.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/checklists/S01-keep-the-config-shape-small-and-typed-do-not-spl.md) and appended the dated handoff entry in [ralph/notes/rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation passed: `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory`.

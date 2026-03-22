@@ -1,8 +1,0 @@
-COMPLETED
-
-Added [apps/indexer/src/indexer.config.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/indexer.config.ts) as the typed source of truth for the indexer’s canister list, network target, and local replica host/port. [apps/indexer/src/config.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/config.ts) now consumes that file by default and derives `icHost` from the configured target, and [apps/indexer/test/config.test.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/test/config.test.ts) covers the new default behavior. [apps/indexer/src/routes/health.ts](/Users/domwoe/Dev/projects/automaton-launchpad/apps/indexer/src/routes/health.ts) still exposes the canister list through the existing `discovery.seedCanisterIds` field, now backed by the dedicated config.
-
-Wrote the required Ralph artifacts to [ralph/reports/checklists/S01-add-a-dedicated-indexer-config-file-as-the-singl.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/checklists/S01-add-a-dedicated-indexer-config-file-as-the-singl.md) and [ralph/notes/rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation passed: `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, `npm run test:factory`.
-

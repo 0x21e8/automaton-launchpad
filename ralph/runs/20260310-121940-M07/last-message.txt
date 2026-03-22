@@ -1,7 +1,0 @@
-COMPLETED
-
-Implemented the factory session core in [lib.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/lib.rs), [types.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/types.rs), [state.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/state.rs), [public.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/api/public.rs), and [admin.rs](/Users/domwoe/Dev/projects/automaton-launchpad/backend/factory/src/api/admin.rs). The crate now has deterministic `create_spawn_session` / `get_spawn_session`, fixed quote config with `quoteTermsHash` and `expiresAt`, upgrade-safe snapshot/restore state, pause handling, registry reads, and per-session audit-log plumbing. I also updated [M07.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/reports/M07.md) and [rolling-handoff.md](/Users/domwoe/Dev/projects/automaton-launchpad/ralph/notes/rolling-handoff.md).
-
-Validation passed for `test -f backend/factory/src/lib.rs`, `test -f backend/factory/src/state.rs`, `test -f backend/factory/src/types.rs`, `rg "create_spawn_session|get_spawn_session|quoteTermsHash|expiresAt|pause" backend/factory/src`, `cargo fmt --check -p factory`, `cargo test -p factory`, `cargo clippy -p factory --all-targets -- -D warnings`, `npm run lint`, `npm run build`, `npm run test`, `npm run lint:factory`, and `npm run test:factory`.
-
-No blocker should stop the next loop iteration.
