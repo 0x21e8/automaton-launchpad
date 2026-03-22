@@ -45,9 +45,7 @@ function shouldBroadcastSpawnSessionUpdate(
     previous.session.state !== next.session.state ||
     previous.session.paymentStatus !== next.session.paymentStatus ||
     previous.audit.length !== next.audit.length ||
-    previous.registryRecord?.canisterId !== next.registryRecord?.canisterId ||
-    previous.escrow?.updatedAt !== next.escrow?.updatedAt ||
-    previous.escrow?.paymentStatus !== next.escrow?.paymentStatus
+    previous.registryRecord?.canisterId !== next.registryRecord?.canisterId
   );
 }
 
@@ -62,14 +60,10 @@ async function resolveSpawnSessionDetail(
     return cached;
   }
 
-  const escrow = await fastify.escrowClient.getEscrowPayment(
-    sessionId,
-    factorySnapshot.session.quoteTermsHash
-  );
   const detail: SpawnSessionDetail = {
     session: factorySnapshot.session,
+    payment: factorySnapshot.payment,
     audit: factorySnapshot.audit,
-    escrow: escrow ?? cached?.escrow ?? null,
     registryRecord: factorySnapshot.registryRecord ?? cached?.registryRecord ?? null
   };
 

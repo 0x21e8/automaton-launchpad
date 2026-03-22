@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import type {
   ChainSlug,
   GridPosition,
+  MonologueEntryCategory,
+  MonologueEntryImportance,
   MonologueEntry
 } from "@ic-automaton/shared";
 
@@ -74,6 +76,30 @@ const CHAIN_INFO = new Map<number, { explorerBaseUrl: string; slug: ChainSlug }>
   [8453, { slug: "base", explorerBaseUrl: "https://basescan.org" }],
   [42161, { slug: "arbitrum", explorerBaseUrl: "https://arbiscan.io" }]
 ]);
+const ERROR_PATTERNS = /\b(error|failed|failure|reject|rejected|critical|panic|halt|stalled?)\b/i;
+const MESSAGE_PATTERNS =
+  /\b(broadcast(?:ed|ing)?|message(?:d|ing)?|notify(?:ing|ied)?|warn(?:ed|ing)?|escalat(?:e|ed|ing)|reply(?:ing|ied)?|sent|send(?:ing)?)\b/i;
+const ACTION_PATTERNS =
+  /\b(rebalance(?:d|ing)?|execut(?:e|ed|ing)|swap(?:ped|ping)?|allocat(?:e|ed|ing)|fund(?:ed|ing)?|adjust(?:ed|ing)?|route(?:d|ing)?|open(?:ed|ing)?|close(?:d|ing)?|sync(?:ed|ing)?|refresh(?:ed|ing)?)\b/i;
+const DECISION_PATTERNS =
+  /\b(plan(?:ned|ning)?|decid(?:e|ed|ing)|priorit(?:ize|ized|izing)|evaluat(?:e|ed|ing)|select(?:ed|ing)?|cho(?:ose|sen|osing)|determin(?:e|ed|ing))\b/i;
+const OBSERVATION_PATTERNS =
+  /\b(review(?:ed|ing)?|monitor(?:ed|ing)?|check(?:ed|ing)?|watch(?:ed|ing)?|inspect(?:ed|ing)?|observe(?:d|ing)?|scan(?:ned|ning)?|track(?:ed|ing)?|assess(?:ed|ing)?)\b/i;
+const HEADLINE_REWRITES: ReadonlyArray<[RegExp, string]> = [
+  [/^reviewing\b/i, "Review"],
+  [/^monitoring\b/i, "Monitor"],
+  [/^checking\b/i, "Check"],
+  [/^watching\b/i, "Watch"],
+  [/^observing\b/i, "Observe"],
+  [/^tracking\b/i, "Track"],
+  [/^assessing\b/i, "Assess"],
+  [/^evaluating\b/i, "Evaluate"],
+  [/^planning\b/i, "Plan"],
+  [/^determining\b/i, "Determine"],
+  [/^rebalancing\b/i, "Rebalance"],
+  [/^broadcasting\b/i, "Broadcast"],
+  [/^sending\b/i, "Send"]
+];
 
 function normalizeHost(host: string) {
   return host.trim().replace(/\/+$/, "");
@@ -229,6 +255,118 @@ export function parseHexBalance(value: string | null) {
 
 function trimFixed(value: string) {
   return value.replace(/\.?0+$/, "");
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateHeadline(value: string, maxLength = 84) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const candidate = value.slice(0, maxLength + 1);
+  const boundary = candidate.lastIndexOf(" ");
+  const sliced = boundary >= Math.floor(maxLength * 0.6) ? candidate.slice(0, boundary) : candidate.slice(0, maxLength);
+  return `${sliced.trimEnd()}…`;
+}
+
+export function deriveMonologueCategory(options: {
+  error: string | null;
+  message: string;
+  toolCallCount: number;
+  type: MonologueEntry["type"];
+}): MonologueEntryCategory {
+  const haystack =
+    `${options.error ?? ""} ${options.message}`.trim();
+
+  if (options.error !== null || ERROR_PATTERNS.test(haystack)) {
+    return "error";
+  }
+
+  if (MESSAGE_PATTERNS.test(haystack)) {
+    return "message";
+  }
+
+  if (options.toolCallCount > 0 || options.type === "action" || ACTION_PATTERNS.test(haystack)) {
+    return "act";
+  }
+
+  if (DECISION_PATTERNS.test(haystack)) {
+    return "decide";
+  }
+
+  if (OBSERVATION_PATTERNS.test(haystack)) {
+    return "observe";
+  }
+
+  return options.type === "thought" ? "observe" : "act";
+}
+
+export function deriveMonologueImportance(options: {
+  category: MonologueEntryCategory;
+  durationMs: number | null;
+  error: string | null;
+  message: string;
+  toolCallCount: number;
+}): MonologueEntryImportance {
+  const haystack = `${options.error ?? ""} ${options.message}`.trim();
+
+  if (options.error !== null || ERROR_PATTERNS.test(haystack)) {
+    return "high";
+  }
+
+  if (/\b(warning|urgent|risk|solvency|freeze|critical)\b/i.test(haystack)) {
+    return "high";
+  }
+
+  if (options.category === "message") {
+    return "high";
+  }
+
+  if (
+    options.category === "act" &&
+    (options.toolCallCount >= 2 || (options.durationMs ?? 0) >= 2_500)
+  ) {
+    return "high";
+  }
+
+  if (
+    options.category === "act" ||
+    options.category === "decide" ||
+    options.toolCallCount > 0 ||
+    (options.durationMs ?? 0) >= 1_500
+  ) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+export function deriveMonologueHeadline(message: string, fallback: string) {
+  const normalized = normalizeWhitespace(message);
+
+  if (normalized === "") {
+    return fallback;
+  }
+
+  let headline = normalized.replace(/[.!?]+$/u, "");
+
+  for (const [pattern, replacement] of HEADLINE_REWRITES) {
+    if (pattern.test(headline)) {
+      headline = headline.replace(pattern, replacement);
+      break;
+    }
+  }
+
+  headline = headline.replace(/\b(before|after|while|because)\b.*$/iu, "").trim();
+
+  if (headline === "") {
+    return fallback;
+  }
+
+  return truncateHeadline(headline);
 }
 
 export function formatFixedDecimal(value: number, digits: number) {

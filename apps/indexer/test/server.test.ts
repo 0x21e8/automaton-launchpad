@@ -6,12 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { EscrowClient } from "../src/integrations/escrow-client.js";
 import { FactoryClient } from "../src/integrations/factory-client.js";
 import { buildServer, start } from "../src/server.js";
 import {
   createAutomatonDetailFixture,
-  createEscrowPaymentRecordFixture,
   createMonologueEntryFixture,
   createSpawnSessionDetailFixture,
   createSpawnedAutomatonRecordFixture
@@ -132,7 +130,7 @@ describe("indexer server", () => {
         "Indexer startup aborted: invalid ingestion target configuration."
       );
       expect(stderrChunks.join("")).toContain(
-        "Indexer ingestion config must include at least one canister ID."
+        "Indexer ingestion config must include at least one canister ID when factory discovery is not configured."
       );
       expect(stderrChunks.join("")).toContain("apps/indexer/src/indexer.config.ts");
     } finally {
@@ -178,7 +176,10 @@ describe("indexer server", () => {
         driver: "better-sqlite3"
       },
       discovery: {
+        mode: "seeds_only",
         seedCanisterIds: ["txyno-ch777-77776-aaaaq-cai"],
+        factoryDiscoveredCanisterIds: [],
+        trackedCanisterIds: ["txyno-ch777-77776-aaaaq-cai"],
         targetNetwork: {
           target: "local",
           icHost: "http://localhost:8000",
@@ -188,12 +189,98 @@ describe("indexer server", () => {
           }
         },
         factoryCanisterId: null,
-        factoryConfigured: false,
-        escrowConfigured: false
+        factoryConfigured: false
       },
+      factory: null,
       realtime: {
         websocketPath: "/ws/events",
         clientCount: 0
+      }
+    });
+
+    await app.close();
+  });
+
+  it("surfaces factory health when a factory canister client is configured", async () => {
+    const app = buildServer({
+      config: {
+        databasePath: await createDatabasePath(),
+        factoryCanisterId: "txyno-ch777-77776-aaaaq-cai"
+      },
+      factoryClient: new FactoryClient({
+        configured: true,
+        adapter: {
+          async createSpawnSession() {
+            throw new Error("not used in this test");
+          },
+          async getSpawnSession() {
+            return null;
+          },
+          async retrySpawnSession() {
+            throw new Error("not used in this test");
+          },
+          async claimSpawnRefund() {
+            throw new Error("not used in this test");
+          },
+          async listSpawnedAutomatons() {
+            return {
+              items: [],
+              nextCursor: null
+            };
+          },
+          async getSpawnedAutomaton() {
+            return null;
+          },
+          async getFactoryHealth() {
+            return {
+              activeSessions: {
+                activeTotal: 2,
+                awaitingPayment: 1,
+                broadcastingRelease: 0,
+                paymentDetected: 1,
+                retryableFailed: 0,
+                spawning: 0
+              },
+              artifact: {
+                loaded: true,
+                versionCommit: "0123456789abcdef0123456789abcdef01234567",
+                wasmSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                wasmSizeBytes: 4_096
+              },
+              currentCanisterBalance: "987654321",
+              cyclesPerSpawn: 1_500_000,
+              escrowContractAddress: "0x00000000000000000000000000000000000000aa",
+              estimatedOutcallCyclesPerInterval: 40_000,
+              factoryEvmAddress: "0x00000000000000000000000000000000000000bb",
+              minPoolBalance: 750_000,
+              pause: false
+            };
+          }
+        }
+      })
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/health"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      discovery: {
+        mode: "seeds_only",
+        factoryCanisterId: "txyno-ch777-77776-aaaaq-cai",
+        factoryConfigured: true,
+        factoryDiscoveredCanisterIds: [],
+        trackedCanisterIds: ["txyno-ch777-77776-aaaaq-cai"]
+      },
+      factory: {
+        currentCanisterBalance: "987654321",
+        escrowContractAddress: "0x00000000000000000000000000000000000000aa",
+        artifact: {
+          loaded: true
+        }
       }
     });
 
@@ -223,6 +310,10 @@ describe("indexer server", () => {
     await app.ready();
 
     await expect(app.indexerStore.listConfiguredCanisterIds()).resolves.toEqual([
+      "ryjl3-tyaaa-aaaaa-aaaba-cai",
+      "txyno-ch777-77776-aaaaq-cai"
+    ]);
+    await expect(app.indexerStore.listTrackedCanisterIds()).resolves.toEqual([
       "ryjl3-tyaaa-aaaaa-aaaba-cai",
       "txyno-ch777-77776-aaaaq-cai"
     ]);
@@ -256,11 +347,138 @@ describe("indexer server", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       discovery: {
+        mode: "seeds_only",
         seedCanisterIds: ["txyno-ch777-77776-aaaaq-cai"],
+        factoryDiscoveredCanisterIds: [],
+        trackedCanisterIds: ["txyno-ch777-77776-aaaaq-cai"],
         targetNetwork: {
           target: "mainnet",
           icHost: "https://ic0.app",
           localReplica: null
+        }
+      }
+    });
+
+    await app.close();
+  });
+
+  it("syncs factory discovery into the tracked registry during startup", async () => {
+    const sharedCanisterId = "txyno-ch777-77776-aaaaq-cai";
+    const factoryOnlyCanisterId = "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    const app = buildServer({
+      config: {
+        databasePath: await createDatabasePath(),
+        factoryCanisterId: "mxzaz-hqaaa-aaaar-qaada-cai",
+        ingestion: {
+          canisterIds: [sharedCanisterId],
+          network: {
+            target: "local",
+            local: {
+              host: "localhost",
+              port: 8000
+            }
+          }
+        }
+      },
+      factoryClient: new FactoryClient({
+        configured: true,
+        adapter: {
+          async createSpawnSession() {
+            throw new Error("not used in this test");
+          },
+          async getSpawnSession() {
+            return null;
+          },
+          async retrySpawnSession() {
+            throw new Error("not used in this test");
+          },
+          async claimSpawnRefund() {
+            throw new Error("not used in this test");
+          },
+          async listSpawnedAutomatons(cursor) {
+            if (cursor === undefined) {
+              return {
+                items: [
+                  createSpawnedAutomatonRecordFixture({
+                    canisterId: sharedCanisterId
+                  })
+                ],
+                nextCursor: sharedCanisterId
+              };
+            }
+
+            return {
+              items: [
+                createSpawnedAutomatonRecordFixture({
+                  canisterId: factoryOnlyCanisterId,
+                  sessionId: "session-1709912345000-2"
+                })
+              ],
+              nextCursor: null
+            };
+          },
+          async getSpawnedAutomaton() {
+            return null;
+          },
+          async getFactoryHealth() {
+            return {
+              activeSessions: {
+                activeTotal: 0,
+                awaitingPayment: 0,
+                broadcastingRelease: 0,
+                paymentDetected: 0,
+                retryableFailed: 0,
+                spawning: 0
+              },
+              artifact: {
+                loaded: true,
+                versionCommit: "0123456789abcdef0123456789abcdef01234567",
+                wasmSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                wasmSizeBytes: 4_096
+              },
+              currentCanisterBalance: "123",
+              cyclesPerSpawn: 1,
+              escrowContractAddress: "0x00000000000000000000000000000000000000aa",
+              estimatedOutcallCyclesPerInterval: 1,
+              factoryEvmAddress: "0x00000000000000000000000000000000000000bb",
+              minPoolBalance: 1,
+              pause: false
+            };
+          }
+        }
+      })
+    });
+
+    await app.ready();
+
+    await expect(app.indexerStore.listFactoryDiscoveredCanisterIds()).resolves.toEqual([
+      factoryOnlyCanisterId,
+      sharedCanisterId
+    ]);
+    await expect(app.indexerStore.listTrackedCanisterIds()).resolves.toEqual([
+      factoryOnlyCanisterId,
+      sharedCanisterId
+    ]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/health"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      discovery: {
+        mode: "both",
+        seedCanisterIds: [sharedCanisterId],
+        factoryDiscoveredCanisterIds: [factoryOnlyCanisterId, sharedCanisterId],
+        trackedCanisterIds: [factoryOnlyCanisterId, sharedCanisterId],
+        overlapCanisterIds: [sharedCanisterId],
+        counts: {
+          seedCanisters: 1,
+          factoryDiscoveredCanisters: 2,
+          trackedCanisters: 2,
+          duplicateCanisters: 1
         }
       }
     });
@@ -457,7 +675,6 @@ describe("indexer server", () => {
     });
     const createdSession = createSpawnSessionDetailFixture({
       registryRecord: null,
-      escrow: null,
       session: {
         ...sessionDetail.session,
         sessionId: "session-create-1",
@@ -466,10 +683,6 @@ describe("indexer server", () => {
         automatonCanisterId: null,
         automatonEvmAddress: null
       }
-    });
-    const escrow = createEscrowPaymentRecordFixture({
-      sessionId: sessionDetail.session.sessionId,
-      quoteTermsHash: sessionDetail.session.quoteTermsHash
     });
     const app = buildServer({
       config: {
@@ -500,6 +713,7 @@ describe("indexer server", () => {
                 expiresAt: createdSession.session.expiresAt,
                 payment: {
                   sessionId: createdSession.session.sessionId,
+                  claimId: createdSession.session.claimId,
                   chain: request.config.chain,
                   asset: request.asset,
                   paymentAddress: "0x00000000000000000000000000000000000000ef",
@@ -514,6 +728,7 @@ describe("indexer server", () => {
             return sessionId === sessionDetail.session.sessionId
               ? {
                   session: sessionDetail.session,
+                  payment: sessionDetail.payment,
                   audit: sessionDetail.audit
                 }
               : null;
@@ -546,14 +761,32 @@ describe("indexer server", () => {
           },
           async getSpawnedAutomaton(canisterId) {
             return canisterId === registryRecord.canisterId ? registryRecord : null;
-          }
-        }
-      }),
-      escrowClient: new EscrowClient({
-        configured: true,
-        adapter: {
-          async getEscrowPayment(sessionId) {
-            return sessionId === sessionDetail.session.sessionId ? escrow : null;
+          },
+          async getFactoryHealth() {
+            return {
+              activeSessions: {
+                activeTotal: 1,
+                awaitingPayment: 0,
+                broadcastingRelease: 0,
+                paymentDetected: 0,
+                retryableFailed: 0,
+                spawning: 0
+              },
+              artifact: {
+                loaded: true,
+                versionCommit: registryRecord.versionCommit,
+                wasmSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                wasmSizeBytes: 1024
+              },
+              currentCanisterBalance: "123456789",
+              cyclesPerSpawn: 1_000_000,
+              escrowContractAddress: "0x00000000000000000000000000000000000000aa",
+              estimatedOutcallCyclesPerInterval: 25_000,
+              factoryEvmAddress: "0x00000000000000000000000000000000000000bb",
+              minPoolBalance: 500_000,
+              pause: false
+            };
           }
         }
       })
@@ -600,8 +833,8 @@ describe("indexer server", () => {
     expect(sessionResponse.statusCode).toBe(200);
     expect(sessionResponse.json()).toEqual({
       session: sessionDetail.session,
+      payment: sessionDetail.payment,
       audit: sessionDetail.audit,
-      escrow,
       registryRecord
     });
     expect(createResponse.statusCode).toBe(200);

@@ -1,5 +1,4 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,20 +21,13 @@ import {
   createSpawnSessionDetailFixture
 } from "./fixtures.js";
 
-const require = createRequire(import.meta.url);
-const WebSocketClient = require("ws").WebSocket as new (url: string) => TestWebSocket;
 const tempPaths: string[] = [];
 
 interface TestWebSocket {
-  addEventListener(
-    event: "error" | "message" | "open",
-    listener: (event: { data?: unknown }) => void,
-    options?: { once?: boolean }
-  ): void;
   close(): void;
-  removeEventListener(
-    event: "error" | "message" | "open",
-    listener: (event: { data?: unknown }) => void
+  once(
+    event: "error" | "message",
+    listener: (value: Error | { toString(): string }) => void
   ): void;
 }
 
@@ -138,78 +130,35 @@ function createRecentTurnsRead(canisterId: string): RecentTurnsRead {
   };
 }
 
-async function openWebSocket(url: string) {
-  const socket = new WebSocketClient(url);
-
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Timed out opening websocket ${url}`));
-    }, 5_000);
-    const onOpen = () => {
-      clearTimeout(timeout);
-      socket.removeEventListener("error", onError);
-      resolve();
-    };
-    const onError = () => {
-      clearTimeout(timeout);
-      socket.removeEventListener("open", onOpen);
-      reject(new Error(`Failed to open websocket ${url}`));
-    };
-
-    socket.addEventListener("open", onOpen, { once: true });
-    socket.addEventListener("error", onError, { once: true });
-  });
-
-  return socket;
-}
-
 function waitForWebSocketMessage(socket: TestWebSocket, timeoutMs = 5_000) {
   return new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      cleanup();
       reject(new Error("Timed out waiting for websocket message."));
     }, timeoutMs);
-    const onMessage = (event: { data?: unknown }) => {
-      cleanup();
-      resolve(String(event.data));
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error("Websocket error while waiting for message."));
-    };
-    const cleanup = () => {
+    socket.once("error", () => {
       clearTimeout(timeout);
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-    };
-
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("error", onError);
+      reject(new Error("Websocket error while waiting for message."));
+    });
+    socket.once("message", (data) => {
+      clearTimeout(timeout);
+      resolve(data.toString());
+    });
   });
 }
 
 function expectNoWebSocketMessage(socket: TestWebSocket, timeoutMs = 300) {
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      cleanup();
       resolve();
     }, timeoutMs);
-    const onMessage = (event: { data?: unknown }) => {
-      cleanup();
-      reject(new Error(`Unexpected websocket message: ${String(event.data)}`));
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error("Websocket error while waiting for silence."));
-    };
-    const cleanup = () => {
+    socket.once("error", () => {
       clearTimeout(timeout);
-      socket.removeEventListener("message", onMessage);
-      socket.removeEventListener("error", onError);
-    };
-
-    socket.addEventListener("message", onMessage);
-    socket.addEventListener("error", onError);
+      reject(new Error("Websocket error while waiting for silence."));
+    });
+    socket.once("message", (data) => {
+      clearTimeout(timeout);
+      reject(new Error(`Unexpected websocket message: ${data.toString()}`));
+    });
   });
 }
 
@@ -334,22 +283,14 @@ describe("realtime hub", () => {
       }
     });
 
-    await app.listen({
-      host: "127.0.0.1",
-      port: 0
-    });
+    await app.ready();
 
-    const address = app.server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected TCP server address for websocket test.");
-    }
-
-    const matchingSocket = await openWebSocket(
-      `ws://127.0.0.1:${address.port}/ws/events?canisterId=${canisterId}`
-    );
-    const nonMatchingSocket = await openWebSocket(
-      `ws://127.0.0.1:${address.port}/ws/events?canisterId=ryjl3-tyaaa-aaaaa-aaaba-cai`
-    );
+    const matchingSocket = (await app.injectWS(
+      `/ws/events?canisterId=${canisterId}`
+    )) as TestWebSocket;
+    const nonMatchingSocket = (await app.injectWS(
+      "/ws/events?canisterId=ryjl3-tyaaa-aaaaa-aaaba-cai"
+    )) as TestWebSocket;
     const eventMessage = waitForWebSocketMessage(matchingSocket);
     const noMessage = expectNoWebSocketMessage(nonMatchingSocket);
 

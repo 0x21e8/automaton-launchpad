@@ -13,6 +13,9 @@ import type {
 import type { IndexerTargetConfig } from "../indexer.config.js";
 import {
   buildCanisterUrl,
+  deriveMonologueCategory,
+  deriveMonologueHeadline,
+  deriveMonologueImportance,
   buildExplorerUrl,
   computeCorePattern,
   computeGridPosition,
@@ -41,16 +44,37 @@ export function normalizeMonologueEntries(turns: HttpTurnRecordResponse[]): Mono
         toOptionalString(turn.inner_dialogue) ??
         toOptionalString(turn.input_summary) ??
         "No monologue captured.";
+      const type = toolCallCount > 0 ? "action" : "thought";
+      const error = toOptionalString(turn.error);
+      const category = deriveMonologueCategory({
+        error,
+        message,
+        toolCallCount,
+        type
+      });
+      const importance = deriveMonologueImportance({
+        category,
+        durationMs: toOptionalInteger(turn.duration_ms),
+        error,
+        message,
+        toolCallCount
+      });
 
       return {
         timestamp,
         turnId,
-        type: toolCallCount > 0 ? "action" : "thought",
+        type,
+        headline: deriveMonologueHeadline(
+          message,
+          type === "thought" ? "Observation update" : "Action update"
+        ),
         message,
+        category,
+        importance,
         agentState: `${toVariantName(turn.state_from, "Unknown")} -> ${toVariantName(turn.state_to, "Unknown")}`,
         toolCallCount,
         durationMs: toOptionalInteger(turn.duration_ms),
-        error: toOptionalString(turn.error)
+        error
       } satisfies MonologueEntry;
     })
     .filter((entry): entry is MonologueEntry => entry !== null)

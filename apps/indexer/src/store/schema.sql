@@ -61,10 +61,13 @@ CREATE TABLE IF NOT EXISTS spawn_sessions (
   payment_status TEXT NOT NULL,
   retryable INTEGER NOT NULL,
   refundable INTEGER NOT NULL,
+  claim_id TEXT NOT NULL,
+  release_tx_hash TEXT,
+  release_broadcast_at INTEGER,
   updated_at INTEGER NOT NULL,
   session_json TEXT NOT NULL,
+  payment_json TEXT,
   audit_json TEXT NOT NULL,
-  escrow_json TEXT,
   registry_json TEXT
 );
 
@@ -73,6 +76,9 @@ CREATE INDEX IF NOT EXISTS spawn_sessions_state_idx
 
 CREATE INDEX IF NOT EXISTS spawn_sessions_payment_status_idx
   ON spawn_sessions (payment_status);
+
+CREATE INDEX IF NOT EXISTS spawn_sessions_claim_id_idx
+  ON spawn_sessions (claim_id);
 
 CREATE TABLE IF NOT EXISTS spawned_automaton_registry (
   canister_id TEXT PRIMARY KEY,

@@ -17,6 +17,7 @@ import {
   type RealtimeEventPublisher
 } from "../src/polling/automaton-indexer.js";
 import { createSqliteStore } from "../src/store/sqlite.js";
+import { createSpawnedAutomatonRecordFixture } from "./fixtures.js";
 
 const tempPaths: string[] = [];
 
@@ -32,6 +33,31 @@ async function createDatabasePath() {
   const directory = await mkdtemp(join(tmpdir(), "indexer-polling-"));
   tempPaths.push(directory);
   return join(directory, "indexer.sqlite");
+}
+
+function createIndexerConfig(canisterIds: string[], factoryCanisterId?: string) {
+  return {
+    host: "127.0.0.1",
+    port: 3001,
+    databasePath: "",
+    websocketPath: "/ws/events",
+    corsAllowedOrigins: [],
+    ingestion: {
+      canisterIds,
+      network: {
+        target: "local" as const,
+        local: {
+          host: "localhost",
+          port: 8000
+        }
+      }
+    },
+    factoryCanisterId,
+    icHost: "http://localhost:8000",
+    fastPollIntervalMs: 15_000,
+    slowPollIntervalMs: 300_000,
+    pricePollIntervalMs: 60_000
+  };
 }
 
 function createIdentityConfigRead(canisterId: string): IdentityConfigRead {
@@ -179,28 +205,7 @@ describe("automaton indexer poller", () => {
     const indexer = new AutomatonIndexer({
       client,
       store,
-      config: {
-        host: "127.0.0.1",
-        port: 3001,
-        databasePath: "",
-        websocketPath: "/ws/events",
-        corsAllowedOrigins: [],
-        ingestion: {
-          canisterIds: [canisterId],
-          network: {
-            target: "local",
-            local: {
-              host: "localhost",
-              port: 8000
-            }
-          }
-        },
-        factoryCanisterId: undefined,
-        icHost: "http://localhost:8000",
-        fastPollIntervalMs: 15_000,
-        slowPollIntervalMs: 300_000,
-        pricePollIntervalMs: 60_000
-      },
+      config: createIndexerConfig([canisterId]),
       priceSource: new FixedEthUsdPriceSource(2_500)
     });
 
@@ -256,10 +261,16 @@ describe("automaton indexer poller", () => {
       promptLayers: ["Protect the canister first."],
       monologue: [
         {
-          turnId: "turn-2"
+          turnId: "turn-2",
+          headline: "Rebalance exposure toward the active LP",
+          category: "act",
+          importance: "high"
         },
         {
-          turnId: "turn-1"
+          turnId: "turn-1",
+          headline: "Check solvency",
+          category: "observe",
+          importance: "high"
         }
       ]
     });
@@ -311,6 +322,122 @@ describe("automaton indexer poller", () => {
     await store.close();
   });
 
+  it("indexes a factory-discovered canister without a seed config entry", async () => {
+    const canisterId = "txyno-ch777-77776-aaaaq-cai";
+    const store = createSqliteStore({
+      databasePath: await createDatabasePath()
+    });
+    const client: AutomatonClient = {
+      readIdentityConfig: vi.fn(async () => createIdentityConfigRead(canisterId)),
+      readRuntimeFinancial: vi.fn(async () => createRuntimeFinancialRead(canisterId)),
+      readRecentTurns: vi.fn(async () => createRecentTurnsRead(canisterId))
+    };
+    const indexer = new AutomatonIndexer({
+      client,
+      store,
+      factoryClient: {
+        isConfigured: () => true,
+        listSpawnedAutomatons: vi.fn(async () => ({
+          items: [createSpawnedAutomatonRecordFixture({ canisterId })],
+          nextCursor: null
+        }))
+      },
+      config: createIndexerConfig([], "factory-canister-id"),
+      priceSource: new FixedEthUsdPriceSource(2_500)
+    });
+
+    await store.initialize();
+    await store.syncConfiguredCanisterIds([]);
+    await indexer.syncFactoryRegistryNow();
+    await indexer.refreshPriceNow();
+    await indexer.pollIdentityNow();
+    await indexer.pollRuntimeNow();
+    await indexer.pollMonologueNow();
+
+    await expect(store.listTrackedCanisterIds()).resolves.toEqual([canisterId]);
+    await expect(store.getAutomatonDetail(canisterId)).resolves.toMatchObject({
+      canisterId,
+      chain: "base"
+    });
+  });
+
+  it("keeps seed canisters indexed alongside factory-discovered canisters", async () => {
+    const seedCanisterId = "txyno-ch777-77776-aaaaq-cai";
+    const discoveredCanisterId = "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    const store = createSqliteStore({
+      databasePath: await createDatabasePath()
+    });
+    const client: AutomatonClient = {
+      readIdentityConfig: vi.fn(async (canisterId: string) => createIdentityConfigRead(canisterId)),
+      readRuntimeFinancial: vi.fn(async (canisterId: string) =>
+        createRuntimeFinancialRead(canisterId)
+      ),
+      readRecentTurns: vi.fn(async (canisterId: string) => createRecentTurnsRead(canisterId))
+    };
+    const indexer = new AutomatonIndexer({
+      client,
+      store,
+      factoryClient: {
+        isConfigured: () => true,
+        listSpawnedAutomatons: vi.fn(async () => ({
+          items: [createSpawnedAutomatonRecordFixture({ canisterId: discoveredCanisterId })],
+          nextCursor: null
+        }))
+      },
+      config: createIndexerConfig([seedCanisterId], "factory-canister-id"),
+      priceSource: new FixedEthUsdPriceSource(2_500)
+    });
+
+    await store.initialize();
+    await store.syncConfiguredCanisterIds([seedCanisterId]);
+    await indexer.syncFactoryRegistryNow();
+    await indexer.pollIdentityNow();
+
+    await expect(store.listTrackedCanisterIds()).resolves.toEqual([
+      discoveredCanisterId,
+      seedCanisterId
+    ]);
+    await expect(store.getAutomatonDetail(seedCanisterId)).resolves.toMatchObject({
+      canisterId: seedCanisterId
+    });
+    await expect(store.getAutomatonDetail(discoveredCanisterId)).resolves.toMatchObject({
+      canisterId: discoveredCanisterId
+    });
+  });
+
+  it("de-duplicates overlapping seed and factory registry ids during polling", async () => {
+    const canisterId = "txyno-ch777-77776-aaaaq-cai";
+    const store = createSqliteStore({
+      databasePath: await createDatabasePath()
+    });
+    const client: AutomatonClient = {
+      readIdentityConfig: vi.fn(async () => createIdentityConfigRead(canisterId)),
+      readRuntimeFinancial: vi.fn(async () => createRuntimeFinancialRead(canisterId)),
+      readRecentTurns: vi.fn(async () => createRecentTurnsRead(canisterId))
+    };
+    const indexer = new AutomatonIndexer({
+      client,
+      store,
+      factoryClient: {
+        isConfigured: () => true,
+        listSpawnedAutomatons: vi.fn(async () => ({
+          items: [createSpawnedAutomatonRecordFixture({ canisterId })],
+          nextCursor: null
+        }))
+      },
+      config: createIndexerConfig([canisterId], "factory-canister-id"),
+      priceSource: new FixedEthUsdPriceSource(2_500)
+    });
+
+    await store.initialize();
+    await store.syncConfiguredCanisterIds([canisterId]);
+    await indexer.syncFactoryRegistryNow();
+    await indexer.pollIdentityNow();
+
+    await expect(store.listTrackedCanisterIds()).resolves.toEqual([canisterId]);
+    expect(client.readIdentityConfig).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces live polling debug state in /health", async () => {
     const canisterId = "txyno-ch777-77776-aaaaq-cai";
     const store = createSqliteStore({
@@ -324,28 +451,7 @@ describe("automaton indexer poller", () => {
     const indexer = new AutomatonIndexer({
       client,
       store,
-      config: {
-        host: "127.0.0.1",
-        port: 3001,
-        databasePath: "",
-        websocketPath: "/ws/events",
-        corsAllowedOrigins: [],
-        ingestion: {
-          canisterIds: [canisterId],
-          network: {
-            target: "local",
-            local: {
-              host: "localhost",
-              port: 8000
-            }
-          }
-        },
-        factoryCanisterId: undefined,
-        icHost: "http://localhost:8000",
-        fastPollIntervalMs: 15_000,
-        slowPollIntervalMs: 300_000,
-        pricePollIntervalMs: 60_000
-      },
+      config: createIndexerConfig([canisterId]),
       priceSource: new FixedEthUsdPriceSource(2_500)
     });
 
@@ -380,6 +486,7 @@ describe("automaton indexer poller", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       discovery: {
+        mode: "seeds_only",
         seedCanisterIds: [canisterId]
       },
       polling: {
@@ -421,28 +528,7 @@ describe("automaton indexer poller", () => {
       client,
       store,
       eventPublisher: publisher,
-      config: {
-        host: "127.0.0.1",
-        port: 3001,
-        databasePath: "",
-        websocketPath: "/ws/events",
-        corsAllowedOrigins: [],
-        ingestion: {
-          canisterIds: [canisterId],
-          network: {
-            target: "local",
-            local: {
-              host: "localhost",
-              port: 8000
-            }
-          }
-        },
-        factoryCanisterId: undefined,
-        icHost: "http://localhost:8000",
-        fastPollIntervalMs: 15_000,
-        slowPollIntervalMs: 300_000,
-        pricePollIntervalMs: 60_000
-      },
+      config: createIndexerConfig([canisterId]),
       priceSource: new FixedEthUsdPriceSource(2_500)
     });
 

@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import { resolveIndexerConfig, type IndexerConfigOverrides } from "./config.js";
 import { LiveAutomatonClient, type AutomatonClient } from "./integrations/automaton-client.js";
-import { EscrowClient } from "./integrations/escrow-client.js";
 import { FactoryClient } from "./integrations/factory-client.js";
 import {
   AutomatonIndexer,
@@ -28,6 +27,7 @@ const INDEXER_TARGET_CONFIG_PATH = fileURLToPath(
   new URL("./indexer.config.ts", import.meta.url)
 );
 const INDEXER_INGESTION_OVERRIDE_VARIABLES = [
+  "INDEXER_INGESTION_CANISTER_IDS",
   "INDEXER_INGESTION_NETWORK_TARGET",
   "INDEXER_INGESTION_LOCAL_HOST",
   "INDEXER_INGESTION_LOCAL_PORT"
@@ -56,7 +56,6 @@ export interface BuildServerOptions {
   automatonClient?: AutomatonClient;
   automatonIndexer?: AutomatonIndexer;
   ethUsdPriceSource?: EthUsdPriceSource;
-  escrowClient?: EscrowClient;
   factoryClient?: FactoryClient;
   logger?: boolean | FastifyBaseLogger;
   startPolling?: boolean;
@@ -71,8 +70,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     createSqliteStore({
       databasePath: config.databasePath
     });
-  const factoryClient = options.factoryClient ?? new FactoryClient();
-  const escrowClient = options.escrowClient ?? new EscrowClient();
+  const effectiveFactoryClient =
+    options.factoryClient ??
+    (config.factoryCanisterId
+      ? FactoryClient.createCanisterBacked({
+          canisterId: config.factoryCanisterId,
+          host: config.icHost
+        })
+      : new FactoryClient());
   const realtimeHub = options.realtimeHub ?? new RealtimeHub(config.websocketPath);
   const automatonClient = options.automatonClient ?? new LiveAutomatonClient(config.ingestion);
   const automatonIndexer =
@@ -81,6 +86,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       client: automatonClient,
       config,
       eventPublisher: realtimeHub,
+      factoryClient: effectiveFactoryClient,
       store,
       priceSource: options.ethUsdPriceSource ?? new FixedEthUsdPriceSource()
     } satisfies AutomatonIndexerOptions);
@@ -91,8 +97,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.decorate("automatonIndexer", automatonIndexer);
-  app.decorate("escrowClient", escrowClient);
-  app.decorate("factoryClient", factoryClient);
+  app.decorate("factoryClient", effectiveFactoryClient);
   app.decorate("startedAt", Date.now());
   app.decorate("indexerConfig", config);
   app.decorate("indexerStore", store);
@@ -130,6 +135,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.addHook("onReady", async () => {
     await app.indexerStore.initialize();
     await app.indexerStore.syncConfiguredCanisterIds(app.indexerConfig.ingestion.canisterIds);
+    await app.automatonIndexer.syncFactoryRegistryNow();
 
     if (options.startPolling ?? false) {
       app.automatonIndexer.start();

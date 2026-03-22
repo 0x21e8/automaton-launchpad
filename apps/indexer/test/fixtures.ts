@@ -1,10 +1,13 @@
+import {
+  deriveClaimId,
+  type SpawnPaymentInstructions,
+  type SpawnSessionDetail,
+  type SpawnedAutomatonRecord
+} from "@ic-automaton/shared";
 import type {
   AutomatonDetail,
   AutomatonRecord,
-  EscrowPaymentRecord,
   MonologueEntry,
-  SpawnSessionDetail,
-  SpawnedAutomatonRecord
 } from "@ic-automaton/shared";
 
 export function createAutomatonDetailFixture(
@@ -140,7 +143,10 @@ export function createMonologueEntryFixture(
     timestamp: 1_709_912_348_000,
     turnId: "turn-1",
     type: "thought",
+    headline: "Check balances",
     message: "Checking balances.",
+    category: "observe",
+    importance: "low",
     agentState: "Idle -> Inferring",
     toolCallCount: 0,
     durationMs: 1200,
@@ -161,27 +167,25 @@ export function createSpawnedAutomatonRecordFixture(
     parentId: null,
     childIds: [],
     createdAt: 1_709_912_360_000,
-    versionCommit: "abcdef1234567890",
+    versionCommit: "abcdef1234567890abcdef1234567890abcdef12",
     ...overrides
   };
 }
 
 export function createEscrowPaymentRecordFixture(
-  overrides: Partial<EscrowPaymentRecord> = {}
-): EscrowPaymentRecord {
+  overrides: Partial<SpawnPaymentInstructions> = {}
+): SpawnPaymentInstructions {
+  const sessionId = overrides.sessionId ?? "session-1709912345000-1";
+
   return {
-    sessionId: "session-1709912345000-1",
-    quoteTermsHash: "0xdeadbeef",
-    paymentAddress: "0x00000000000000000000000000000000000000ff",
+    sessionId,
+    claimId: deriveClaimId(sessionId),
     chain: "base",
-    asset: "eth",
-    requiredGrossAmount: "1000000000000000000",
-    paidAmount: "1000000000000000000",
-    paymentStatus: "paid",
-    refundable: false,
-    refundedAt: null,
-    createdAt: 1_709_912_350_000,
-    updatedAt: 1_709_912_351_000,
+    asset: "usdc",
+    paymentAddress: "0x00000000000000000000000000000000000000ff",
+    grossAmount: "1000000000",
+    quoteTermsHash: "0xdeadbeef",
+    expiresAt: 1_709_912_500_000,
     ...overrides
   };
 }
@@ -193,25 +197,32 @@ export function createSpawnSessionDetailFixture(
     overrides.registryRecord === undefined
       ? createSpawnedAutomatonRecordFixture()
       : overrides.registryRecord;
-  const escrow =
-    overrides.escrow === undefined ? createEscrowPaymentRecordFixture() : overrides.escrow;
+  const defaultSessionId =
+    overrides.session?.sessionId ??
+    registryRecord?.sessionId ??
+    "session-1709912345000-1";
+  const payment =
+    overrides.payment ?? createEscrowPaymentRecordFixture({ sessionId: defaultSessionId });
   const session: SpawnSessionDetail["session"] = {
-    sessionId: registryRecord?.sessionId ?? "session-1709912345000-1",
+    sessionId: defaultSessionId,
+    claimId: payment.claimId,
     stewardAddress: "0x0000000000000000000000000000000000000002",
     chain: "base",
-    asset: "eth",
-    grossAmount: "1000000000000000000",
-    platformFee: "10000000000000000",
-    creationCost: "20000000000000000",
-    netForwardAmount: "970000000000000000",
-    quoteTermsHash: escrow?.quoteTermsHash ?? "0xdeadbeef",
+    asset: "usdc",
+    grossAmount: "1000000000",
+    platformFee: "1000000",
+    creationCost: "2000000",
+    netForwardAmount: "997000000",
+    quoteTermsHash: payment.quoteTermsHash,
     expiresAt: 1_709_912_500_000,
     state: registryRecord ? "complete" : "awaiting_payment",
     retryable: false,
     refundable: false,
-    paymentStatus: escrow?.paymentStatus ?? "paid",
+    paymentStatus: registryRecord ? "paid" : "unpaid",
     automatonCanisterId: registryRecord?.canisterId ?? null,
     automatonEvmAddress: registryRecord?.evmAddress ?? null,
+    releaseTxHash: registryRecord ? "0x1111111111111111111111111111111111111111111111111111111111111111" : null,
+    releaseBroadcastAt: registryRecord ? 1_709_912_359_000 : null,
     parentId: null,
     childIds: [],
     config: {
@@ -219,9 +230,11 @@ export function createSpawnSessionDetailFixture(
       risk: 3,
       strategies: ["yield-farming"],
       skills: ["portfolio-reporting"],
-      openRouterApiKey: null,
-      model: "openrouter/auto",
-      braveSearchApiKey: null
+      provider: {
+        openRouterApiKey: null,
+        model: "openrouter/auto",
+        braveSearchApiKey: null
+      }
     },
     createdAt: 1_709_912_345_000,
     updatedAt: 1_709_912_360_000
@@ -241,7 +254,7 @@ export function createSpawnSessionDetailFixture(
     audit.push({
       sessionId: session.sessionId,
       timestamp: 1_709_912_360_000,
-      fromState: "funding_automaton",
+      fromState: "broadcasting_release",
       toState: "complete",
       actor: "system",
       reason: "spawn completed"
@@ -251,8 +264,8 @@ export function createSpawnSessionDetailFixture(
   return {
     ...overrides,
     session: overrides.session ?? session,
+    payment,
     audit: overrides.audit ?? audit,
-    escrow,
     registryRecord
   };
 }

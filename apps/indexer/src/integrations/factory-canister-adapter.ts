@@ -1,0 +1,857 @@
+import {
+  Actor,
+  HttpAgent,
+  type ActorMethod,
+  type ActorSubclass
+} from "@dfinity/agent";
+import { IDL } from "@dfinity/candid";
+import type {
+  CreateSpawnSessionRequest,
+  CreateSpawnSessionResponse,
+  PaymentStatus,
+  RefundSpawnResponse,
+  RetrySpawnResponse,
+  SessionAuditActor,
+  SpawnAsset,
+  SpawnChain,
+  SpawnSessionState,
+  SpawnSessionStatusResponse,
+  SpawnedAutomatonRecord,
+  SpawnedAutomatonRegistryPage
+} from "@ic-automaton/shared";
+
+import type { FactoryAdapter, FactoryHealthSnapshot } from "./factory-client.js";
+
+type Optional<T> = [] | [T];
+
+type CandidVariant<TName extends string, TValue = null> = {
+  [Name in TName]: TValue;
+};
+
+type CandidSpawnChain = CandidVariant<"Base">;
+type CandidSpawnAsset = CandidVariant<"Usdc">;
+type CandidSpawnSessionState = CandidVariant<
+  | "AwaitingPayment"
+  | "PaymentDetected"
+  | "Spawning"
+  | "BroadcastingRelease"
+  | "Complete"
+  | "Failed"
+  | "Expired"
+>;
+type CandidPaymentStatus = CandidVariant<"Unpaid" | "Partial" | "Paid" | "Refunded">;
+type CandidSessionAuditActor = CandidVariant<"System" | "User" | "Admin">;
+
+interface CandidProviderConfig {
+  brave_search_api_key: Optional<string>;
+  model: Optional<string>;
+  open_router_api_key: Optional<string>;
+}
+
+interface CandidSpawnConfig {
+  chain: CandidSpawnChain;
+  provider: CandidProviderConfig;
+  risk: number;
+  skills: string[];
+  strategies: string[];
+}
+
+interface CandidCreateSpawnSessionRequest {
+  asset: CandidSpawnAsset;
+  config: CandidSpawnConfig;
+  gross_amount: string;
+  parent_id: Optional<string>;
+  steward_address: string;
+}
+
+interface CandidSpawnPaymentInstructions {
+  asset: CandidSpawnAsset;
+  chain: CandidSpawnChain;
+  claim_id: string;
+  expires_at: bigint;
+  gross_amount: string;
+  payment_address: string;
+  quote_terms_hash: string;
+  session_id: string;
+}
+
+interface CandidSpawnQuote {
+  asset: CandidSpawnAsset;
+  chain: CandidSpawnChain;
+  creation_cost: string;
+  expires_at: bigint;
+  gross_amount: string;
+  net_forward_amount: string;
+  payment: CandidSpawnPaymentInstructions;
+  platform_fee: string;
+  quote_terms_hash: string;
+  session_id: string;
+}
+
+interface CandidSpawnSession {
+  asset: CandidSpawnAsset;
+  automaton_canister_id: Optional<string>;
+  automaton_evm_address: Optional<string>;
+  chain: CandidSpawnChain;
+  child_ids: string[];
+  claim_id: string;
+  config: CandidSpawnConfig;
+  created_at: bigint;
+  creation_cost: string;
+  expires_at: bigint;
+  gross_amount: string;
+  net_forward_amount: string;
+  parent_id: Optional<string>;
+  payment_status: CandidPaymentStatus;
+  platform_fee: string;
+  quote_terms_hash: string;
+  refundable: boolean;
+  release_broadcast_at: Optional<bigint>;
+  release_tx_hash: Optional<string>;
+  retryable: boolean;
+  session_id: string;
+  state: CandidSpawnSessionState;
+  steward_address: string;
+  updated_at: bigint;
+}
+
+interface CandidSessionAuditEntry {
+  actor: CandidSessionAuditActor;
+  from_state: Optional<CandidSpawnSessionState>;
+  reason: string;
+  session_id: string;
+  timestamp: bigint;
+  to_state: CandidSpawnSessionState;
+}
+
+interface CandidSpawnSessionStatusResponse {
+  audit: CandidSessionAuditEntry[];
+  payment: CandidSpawnPaymentInstructions;
+  session: CandidSpawnSession;
+}
+
+interface CandidSpawnedAutomatonRecord {
+  canister_id: string;
+  chain: CandidSpawnChain;
+  child_ids: string[];
+  created_at: bigint;
+  evm_address: string;
+  parent_id: Optional<string>;
+  session_id: string;
+  steward_address: string;
+  version_commit: string;
+}
+
+interface CandidSpawnedAutomatonRegistryPage {
+  items: CandidSpawnedAutomatonRecord[];
+  next_cursor: Optional<string>;
+}
+
+interface CandidRefundSpawnResponse {
+  payment_status: CandidPaymentStatus;
+  refunded_at: bigint;
+  session_id: string;
+  state: CandidSpawnSessionState;
+}
+
+interface CandidFactoryArtifactSnapshot {
+  loaded: boolean;
+  version_commit: Optional<string>;
+  wasm_sha256: Optional<string>;
+  wasm_size_bytes: Optional<bigint>;
+}
+
+interface CandidFactorySessionHealthCounts {
+  active_total: bigint;
+  awaiting_payment: bigint;
+  broadcasting_release: bigint;
+  payment_detected: bigint;
+  retryable_failed: bigint;
+  spawning: bigint;
+}
+
+interface CandidFactoryHealthSnapshot {
+  active_sessions: CandidFactorySessionHealthCounts;
+  artifact: CandidFactoryArtifactSnapshot;
+  current_canister_balance: bigint;
+  cycles_per_spawn: bigint;
+  escrow_contract_address: string;
+  estimated_outcall_cycles_per_interval: bigint;
+  factory_evm_address: Optional<string>;
+  min_pool_balance: bigint;
+  pause: boolean;
+}
+
+type CandidFactoryError =
+  | CandidVariant<"SessionNotFound", { session_id: string }>
+  | CandidVariant<"RegistryRecordNotFound", { canister_id: string }>
+  | Record<string, unknown>;
+
+type CandidResult<T> = {
+  Ok?: T;
+  Err?: CandidFactoryError;
+};
+
+interface FactoryCanisterActor {
+  claim_spawn_refund: ActorMethod<[string], CandidResult<CandidRefundSpawnResponse>>;
+  create_spawn_session: ActorMethod<
+    [CandidCreateSpawnSessionRequest],
+    CandidResult<{
+      quote: CandidSpawnQuote;
+      session: CandidSpawnSession;
+    }>
+  >;
+  get_factory_health: ActorMethod<[], CandidFactoryHealthSnapshot>;
+  get_spawn_session: ActorMethod<[string], CandidResult<CandidSpawnSessionStatusResponse>>;
+  get_spawned_automaton: ActorMethod<[string], CandidResult<CandidSpawnedAutomatonRecord>>;
+  list_spawned_automatons: ActorMethod<
+    [Optional<string>, bigint],
+    CandidResult<CandidSpawnedAutomatonRegistryPage>
+  >;
+  retry_spawn_session: ActorMethod<[string], CandidResult<CandidSpawnSessionStatusResponse>>;
+}
+
+function createFactoryIdl() {
+  return ({ IDL: candid }: { IDL: typeof IDL }) => {
+    const SpawnAsset = candid.Variant({
+      Usdc: candid.Null
+    });
+    const SpawnChain = candid.Variant({
+      Base: candid.Null
+    });
+    const ProviderConfig = candid.Record({
+      model: candid.Opt(candid.Text),
+      open_router_api_key: candid.Opt(candid.Text),
+      brave_search_api_key: candid.Opt(candid.Text)
+    });
+    const SpawnConfig = candid.Record({
+      provider: ProviderConfig,
+      chain: SpawnChain,
+      risk: candid.Nat8,
+      skills: candid.Vec(candid.Text),
+      strategies: candid.Vec(candid.Text)
+    });
+    const CreateSpawnSessionRequest = candid.Record({
+      asset: SpawnAsset,
+      parent_id: candid.Opt(candid.Text),
+      config: SpawnConfig,
+      steward_address: candid.Text,
+      gross_amount: candid.Text
+    });
+    const PaymentStatus = candid.Variant({
+      Refunded: candid.Null,
+      Paid: candid.Null,
+      Unpaid: candid.Null,
+      Partial: candid.Null
+    });
+    const SpawnSessionState = candid.Variant({
+      Failed: candid.Null,
+      BroadcastingRelease: candid.Null,
+      Spawning: candid.Null,
+      Complete: candid.Null,
+      AwaitingPayment: candid.Null,
+      PaymentDetected: candid.Null,
+      Expired: candid.Null
+    });
+    const SpawnPaymentInstructions = candid.Record({
+      asset: SpawnAsset,
+      session_id: candid.Text,
+      claim_id: candid.Text,
+      chain: SpawnChain,
+      quote_terms_hash: candid.Text,
+      payment_address: candid.Text,
+      expires_at: candid.Nat64,
+      gross_amount: candid.Text
+    });
+    const SpawnQuote = candid.Record({
+      asset: SpawnAsset,
+      session_id: candid.Text,
+      chain: SpawnChain,
+      quote_terms_hash: candid.Text,
+      net_forward_amount: candid.Text,
+      expires_at: candid.Nat64,
+      payment: SpawnPaymentInstructions,
+      gross_amount: candid.Text,
+      creation_cost: candid.Text,
+      platform_fee: candid.Text
+    });
+    const SpawnSession = candid.Record({
+      updated_at: candid.Nat64,
+      asset: SpawnAsset,
+      session_id: candid.Text,
+      claim_id: candid.Text,
+      chain: SpawnChain,
+      quote_terms_hash: candid.Text,
+      created_at: candid.Nat64,
+      payment_status: PaymentStatus,
+      refundable: candid.Bool,
+      parent_id: candid.Opt(candid.Text),
+      net_forward_amount: candid.Text,
+      state: SpawnSessionState,
+      automaton_evm_address: candid.Opt(candid.Text),
+      release_broadcast_at: candid.Opt(candid.Nat64),
+      automaton_canister_id: candid.Opt(candid.Text),
+      config: SpawnConfig,
+      retryable: candid.Bool,
+      expires_at: candid.Nat64,
+      child_ids: candid.Vec(candid.Text),
+      steward_address: candid.Text,
+      gross_amount: candid.Text,
+      release_tx_hash: candid.Opt(candid.Text),
+      creation_cost: candid.Text,
+      platform_fee: candid.Text
+    });
+    const SessionAuditActor = candid.Variant({
+      System: candid.Null,
+      User: candid.Null,
+      Admin: candid.Null
+    });
+    const SessionAuditEntry = candid.Record({
+      actor: SessionAuditActor,
+      session_id: candid.Text,
+      to_state: SpawnSessionState,
+      from_state: candid.Opt(SpawnSessionState),
+      timestamp: candid.Nat64,
+      reason: candid.Text
+    });
+    const SpawnSessionStatusResponse = candid.Record({
+      audit: candid.Vec(SessionAuditEntry),
+      payment: SpawnPaymentInstructions,
+      session: SpawnSession
+    });
+    const SpawnedAutomatonRecord = candid.Record({
+      evm_address: candid.Text,
+      session_id: candid.Text,
+      chain: SpawnChain,
+      canister_id: candid.Text,
+      created_at: candid.Nat64,
+      parent_id: candid.Opt(candid.Text),
+      version_commit: candid.Text,
+      child_ids: candid.Vec(candid.Text),
+      steward_address: candid.Text
+    });
+    const SpawnedAutomatonRegistryPage = candid.Record({
+      next_cursor: candid.Opt(candid.Text),
+      items: candid.Vec(SpawnedAutomatonRecord)
+    });
+    const RefundSpawnResponse = candid.Record({
+      session_id: candid.Text,
+      payment_status: PaymentStatus,
+      state: SpawnSessionState,
+      refunded_at: candid.Nat64
+    });
+    const FactoryArtifactSnapshot = candid.Record({
+      loaded: candid.Bool,
+      wasm_sha256: candid.Opt(candid.Text),
+      version_commit: candid.Opt(candid.Text),
+      wasm_size_bytes: candid.Opt(candid.Nat64)
+    });
+    const FactorySessionHealthCounts = candid.Record({
+      active_total: candid.Nat64,
+      awaiting_payment: candid.Nat64,
+      payment_detected: candid.Nat64,
+      spawning: candid.Nat64,
+      broadcasting_release: candid.Nat64,
+      retryable_failed: candid.Nat64
+    });
+    const FactoryHealthSnapshot = candid.Record({
+      current_canister_balance: candid.Nat,
+      pause: candid.Bool,
+      cycles_per_spawn: candid.Nat64,
+      min_pool_balance: candid.Nat64,
+      estimated_outcall_cycles_per_interval: candid.Nat64,
+      escrow_contract_address: candid.Text,
+      factory_evm_address: candid.Opt(candid.Text),
+      artifact: FactoryArtifactSnapshot,
+      active_sessions: FactorySessionHealthCounts
+    });
+    const FactoryError = candid.Variant({
+      ArtifactHashMismatch: candid.Record({ expected: candid.Text, actual: candid.Text }),
+      QuoteTermsHashMismatch: candid.Record({ expected: candid.Text, received: candid.Text }),
+      RegistryRecordNotFound: candid.Record({ canister_id: candid.Text }),
+      InvalidAmount: candid.Record({ value: candid.Text }),
+      InvalidSha256: candid.Record({ value: candid.Text }),
+      InvalidVersionCommit: candid.Record({ value: candid.Text }),
+      UnauthorizedAdmin: candid.Record({ caller: candid.Text }),
+      SessionNotRetryable: candid.Record({
+        session_id: candid.Text,
+        state: SpawnSessionState
+      }),
+      ManagementCallFailed: candid.Record({ method: candid.Text, message: candid.Text }),
+      InsufficientCyclesPool: candid.Record({ available: candid.Nat, required: candid.Nat }),
+      SessionNotFound: candid.Record({ session_id: candid.Text }),
+      ControllerInvariantViolation: candid.Record({ canister_id: candid.Text }),
+      FactoryPaused: candid.Record({ pause: candid.Bool }),
+      UnauthorizedSteward: candid.Record({ session_id: candid.Text, caller: candid.Text }),
+      PaymentNotSettled: candid.Record({ status: PaymentStatus, session_id: candid.Text }),
+      SessionNotRefundable: candid.Record({
+        session_id: candid.Text,
+        payment_status: PaymentStatus,
+        state: SpawnSessionState
+      }),
+      GrossBelowRequiredMinimum: candid.Record({
+        provided: candid.Text,
+        required: candid.Text
+      }),
+      AutomatonRuntimeNotFound: candid.Record({ canister_id: candid.Text }),
+      InvalidPaginationLimit: candid.Record({ limit: candid.Nat64 }),
+      SessionNotReadyForSpawn: candid.Record({
+        session_id: candid.Text,
+        state: SpawnSessionState
+      }),
+      SessionExpired: candid.Record({ session_id: candid.Text, expires_at: candid.Nat64 }),
+      EscrowClaimNotFound: candid.Record({ session_id: candid.Text })
+    });
+    const ResultSession = candid.Variant({
+      Ok: SpawnSessionStatusResponse,
+      Err: FactoryError
+    });
+    const ResultCreate = candid.Variant({
+      Ok: candid.Record({
+        quote: SpawnQuote,
+        session: SpawnSession
+      }),
+      Err: FactoryError
+    });
+    const ResultRefund = candid.Variant({
+      Ok: RefundSpawnResponse,
+      Err: FactoryError
+    });
+    const ResultRecord = candid.Variant({
+      Ok: SpawnedAutomatonRecord,
+      Err: FactoryError
+    });
+    const ResultRegistryPage = candid.Variant({
+      Ok: SpawnedAutomatonRegistryPage,
+      Err: FactoryError
+    });
+
+    return candid.Service({
+      claim_spawn_refund: candid.Func([candid.Text], [ResultRefund], []),
+      create_spawn_session: candid.Func([CreateSpawnSessionRequest], [ResultCreate], []),
+      get_factory_health: candid.Func([], [FactoryHealthSnapshot], ["query"]),
+      get_spawn_session: candid.Func([candid.Text], [ResultSession], ["query"]),
+      get_spawned_automaton: candid.Func([candid.Text], [ResultRecord], ["query"]),
+      list_spawned_automatons: candid.Func(
+        [candid.Opt(candid.Text), candid.Nat64],
+        [ResultRegistryPage],
+        ["query"]
+      ),
+      retry_spawn_session: candid.Func([candid.Text], [ResultSession], [])
+    });
+  };
+}
+
+function unwrapOptional<T>(value: Optional<T>): T | null {
+  return value.length === 0 ? null : value[0];
+}
+
+function expectOk<T>(result: CandidResult<T>): T {
+  if (result.Ok !== undefined) {
+    return result.Ok;
+  }
+
+  throw new Error(formatFactoryError(result.Err ?? { Unknown: null }));
+}
+
+function isFactoryErrorVariant(
+  error: CandidFactoryError | undefined,
+  name: string
+): boolean {
+  return error !== undefined && Object.prototype.hasOwnProperty.call(error, name);
+}
+
+function formatFactoryError(error: CandidFactoryError) {
+  const [name, detail] = Object.entries(error)[0] ?? ["Unknown", null];
+  return `Factory canister call failed with ${name}: ${JSON.stringify(detail)}`;
+}
+
+function mapChain(chain: CandidSpawnChain): SpawnChain {
+  if ("Base" in chain) {
+    return "base";
+  }
+
+  throw new Error(`Unsupported chain variant: ${JSON.stringify(chain)}`);
+}
+
+function mapAsset(asset: CandidSpawnAsset): SpawnAsset {
+  if ("Usdc" in asset) {
+    return "usdc";
+  }
+
+  throw new Error(`Unsupported asset variant: ${JSON.stringify(asset)}`);
+}
+
+function mapSessionState(state: CandidSpawnSessionState): SpawnSessionState {
+  if ("AwaitingPayment" in state) {
+    return "awaiting_payment";
+  }
+  if ("PaymentDetected" in state) {
+    return "payment_detected";
+  }
+  if ("Spawning" in state) {
+    return "spawning";
+  }
+  if ("BroadcastingRelease" in state) {
+    return "broadcasting_release";
+  }
+  if ("Complete" in state) {
+    return "complete";
+  }
+  if ("Failed" in state) {
+    return "failed";
+  }
+  if ("Expired" in state) {
+    return "expired";
+  }
+
+  throw new Error(`Unsupported session state variant: ${JSON.stringify(state)}`);
+}
+
+function mapPaymentStatus(status: CandidPaymentStatus): PaymentStatus {
+  if ("Unpaid" in status) {
+    return "unpaid";
+  }
+  if ("Partial" in status) {
+    return "partial";
+  }
+  if ("Paid" in status) {
+    return "paid";
+  }
+  if ("Refunded" in status) {
+    return "refunded";
+  }
+
+  throw new Error(`Unsupported payment status variant: ${JSON.stringify(status)}`);
+}
+
+function mapAuditActor(actor: CandidSessionAuditActor): SessionAuditActor {
+  if ("System" in actor) {
+    return "system";
+  }
+  if ("User" in actor) {
+    return "user";
+  }
+  if ("Admin" in actor) {
+    return "admin";
+  }
+
+  throw new Error(`Unsupported audit actor variant: ${JSON.stringify(actor)}`);
+}
+
+function toNumber(value: bigint) {
+  return Number(value);
+}
+
+function mapSpawnConfig(config: CandidSpawnConfig): CreateSpawnSessionRequest["config"] {
+  return {
+    chain: mapChain(config.chain),
+    risk: config.risk,
+    skills: [...config.skills],
+    strategies: [...config.strategies],
+    provider: {
+      model: unwrapOptional(config.provider.model),
+      openRouterApiKey: unwrapOptional(config.provider.open_router_api_key),
+      braveSearchApiKey: unwrapOptional(config.provider.brave_search_api_key)
+    }
+  };
+}
+
+function mapSpawnPaymentInstructions(
+  payment: CandidSpawnPaymentInstructions
+): CreateSpawnSessionResponse["quote"]["payment"] {
+  return {
+    asset: mapAsset(payment.asset),
+    chain: mapChain(payment.chain),
+    claimId: payment.claim_id,
+    expiresAt: toNumber(payment.expires_at),
+    grossAmount: payment.gross_amount,
+    paymentAddress: payment.payment_address,
+    quoteTermsHash: payment.quote_terms_hash,
+    sessionId: payment.session_id
+  };
+}
+
+function mapSpawnSession(session: CandidSpawnSession): SpawnSessionStatusResponse["session"] {
+  return {
+    asset: mapAsset(session.asset),
+    automatonCanisterId: unwrapOptional(session.automaton_canister_id),
+    automatonEvmAddress: unwrapOptional(session.automaton_evm_address),
+    chain: mapChain(session.chain),
+    childIds: [...session.child_ids],
+    claimId: session.claim_id,
+    config: mapSpawnConfig(session.config),
+    createdAt: toNumber(session.created_at),
+    creationCost: session.creation_cost,
+    expiresAt: toNumber(session.expires_at),
+    grossAmount: session.gross_amount,
+    netForwardAmount: session.net_forward_amount,
+    parentId: unwrapOptional(session.parent_id),
+    paymentStatus: mapPaymentStatus(session.payment_status),
+    platformFee: session.platform_fee,
+    quoteTermsHash: session.quote_terms_hash,
+    refundable: session.refundable,
+    releaseBroadcastAt:
+      unwrapOptional(session.release_broadcast_at) === null
+        ? null
+        : toNumber(unwrapOptional(session.release_broadcast_at) as bigint),
+    releaseTxHash: unwrapOptional(session.release_tx_hash),
+    retryable: session.retryable,
+    sessionId: session.session_id,
+    state: mapSessionState(session.state),
+    stewardAddress: session.steward_address,
+    updatedAt: toNumber(session.updated_at)
+  };
+}
+
+function mapSessionStatus(
+  response: CandidSpawnSessionStatusResponse
+): SpawnSessionStatusResponse {
+  return {
+    session: mapSpawnSession(response.session),
+    payment: mapSpawnPaymentInstructions(response.payment),
+    audit: response.audit.map((entry) => ({
+      actor: mapAuditActor(entry.actor),
+      fromState:
+        unwrapOptional(entry.from_state) === null
+          ? null
+          : mapSessionState(unwrapOptional(entry.from_state) as CandidSpawnSessionState),
+      reason: entry.reason,
+      sessionId: entry.session_id,
+      timestamp: toNumber(entry.timestamp),
+      toState: mapSessionState(entry.to_state)
+    }))
+  };
+}
+
+function mapRegistryRecord(record: CandidSpawnedAutomatonRecord): SpawnedAutomatonRecord {
+  return {
+    canisterId: record.canister_id,
+    chain: mapChain(record.chain),
+    childIds: [...record.child_ids],
+    createdAt: toNumber(record.created_at),
+    evmAddress: record.evm_address,
+    parentId: unwrapOptional(record.parent_id),
+    sessionId: record.session_id,
+    stewardAddress: record.steward_address,
+    versionCommit: record.version_commit
+  };
+}
+
+function mapRefundResponse(response: CandidRefundSpawnResponse): RefundSpawnResponse {
+  return {
+    paymentStatus: mapPaymentStatus(response.payment_status),
+    refundedAt: toNumber(response.refunded_at),
+    sessionId: response.session_id,
+    state: mapSessionState(response.state)
+  };
+}
+
+function mapCreateRequest(
+  request: CreateSpawnSessionRequest
+): CandidCreateSpawnSessionRequest {
+  return {
+    asset: {
+      Usdc: null
+    },
+    config: {
+      chain: {
+        Base: null
+      },
+      provider: {
+        brave_search_api_key:
+          request.config.provider.braveSearchApiKey === null
+            ? []
+            : [request.config.provider.braveSearchApiKey],
+        model: request.config.provider.model === null ? [] : [request.config.provider.model],
+        open_router_api_key:
+          request.config.provider.openRouterApiKey === null
+            ? []
+            : [request.config.provider.openRouterApiKey]
+      },
+      risk: request.config.risk,
+      skills: [...request.config.skills],
+      strategies: [...request.config.strategies]
+    },
+    gross_amount: request.grossAmount,
+    parent_id: request.parentId ? [request.parentId] : [],
+    steward_address: request.stewardAddress
+  };
+}
+
+function mapCreateResponse(
+  response: {
+    quote: CandidSpawnQuote;
+    session: CandidSpawnSession;
+  }
+): CreateSpawnSessionResponse {
+  return {
+    quote: {
+      asset: mapAsset(response.quote.asset),
+      chain: mapChain(response.quote.chain),
+      creationCost: response.quote.creation_cost,
+      expiresAt: toNumber(response.quote.expires_at),
+      grossAmount: response.quote.gross_amount,
+      netForwardAmount: response.quote.net_forward_amount,
+      payment: mapSpawnPaymentInstructions(response.quote.payment),
+      platformFee: response.quote.platform_fee,
+      quoteTermsHash: response.quote.quote_terms_hash,
+      sessionId: response.quote.session_id
+    },
+    session: mapSpawnSession(response.session)
+  };
+}
+
+function mapRegistryPage(
+  page: CandidSpawnedAutomatonRegistryPage
+): SpawnedAutomatonRegistryPage {
+  return {
+    items: page.items.map(mapRegistryRecord),
+    nextCursor: unwrapOptional(page.next_cursor)
+  };
+}
+
+function mapFactoryHealth(snapshot: CandidFactoryHealthSnapshot): FactoryHealthSnapshot {
+  return {
+    activeSessions: {
+      activeTotal: toNumber(snapshot.active_sessions.active_total),
+      awaitingPayment: toNumber(snapshot.active_sessions.awaiting_payment),
+      broadcastingRelease: toNumber(snapshot.active_sessions.broadcasting_release),
+      paymentDetected: toNumber(snapshot.active_sessions.payment_detected),
+      retryableFailed: toNumber(snapshot.active_sessions.retryable_failed),
+      spawning: toNumber(snapshot.active_sessions.spawning)
+    },
+    artifact: {
+      loaded: snapshot.artifact.loaded,
+      versionCommit: unwrapOptional(snapshot.artifact.version_commit),
+      wasmSha256: unwrapOptional(snapshot.artifact.wasm_sha256),
+      wasmSizeBytes:
+        unwrapOptional(snapshot.artifact.wasm_size_bytes) === null
+          ? null
+          : toNumber(unwrapOptional(snapshot.artifact.wasm_size_bytes) as bigint)
+    },
+    currentCanisterBalance: snapshot.current_canister_balance.toString(),
+    cyclesPerSpawn: toNumber(snapshot.cycles_per_spawn),
+    escrowContractAddress: snapshot.escrow_contract_address,
+    estimatedOutcallCyclesPerInterval: toNumber(
+      snapshot.estimated_outcall_cycles_per_interval
+    ),
+    factoryEvmAddress: unwrapOptional(snapshot.factory_evm_address),
+    minPoolBalance: toNumber(snapshot.min_pool_balance),
+    pause: snapshot.pause
+  };
+}
+
+export class CanisterFactoryAdapter implements FactoryAdapter {
+  private agentPromise?: Promise<HttpAgent>;
+  private actorPromise?: Promise<ActorSubclass<FactoryCanisterActor>>;
+
+  constructor(
+    private readonly options: {
+      canisterId: string;
+      host: string;
+      createAgent?: (host: string) => Promise<HttpAgent>;
+      createActor?: (
+        agent: HttpAgent,
+        canisterId: string
+      ) => Promise<ActorSubclass<FactoryCanisterActor>>;
+    }
+  ) {}
+
+  async createSpawnSession(
+    request: CreateSpawnSessionRequest
+  ): Promise<CreateSpawnSessionResponse> {
+    const actor = await this.getActor();
+    return mapCreateResponse(
+      expectOk(await actor.create_spawn_session(mapCreateRequest(request)))
+    );
+  }
+
+  async getSpawnSession(sessionId: string): Promise<SpawnSessionStatusResponse | null> {
+    const actor = await this.getActor();
+    const response = await actor.get_spawn_session(sessionId);
+
+    if (isFactoryErrorVariant(response.Err, "SessionNotFound")) {
+      return null;
+    }
+
+    return mapSessionStatus(expectOk(response));
+  }
+
+  async retrySpawnSession(sessionId: string): Promise<RetrySpawnResponse> {
+    const actor = await this.getActor();
+    return {
+      session: mapSessionStatus(expectOk(await actor.retry_spawn_session(sessionId))).session
+    };
+  }
+
+  async claimSpawnRefund(sessionId: string): Promise<RefundSpawnResponse> {
+    const actor = await this.getActor();
+    return mapRefundResponse(expectOk(await actor.claim_spawn_refund(sessionId)));
+  }
+
+  async listSpawnedAutomatons(
+    cursor: string | undefined,
+    limit: number
+  ): Promise<SpawnedAutomatonRegistryPage> {
+    const actor = await this.getActor();
+    return mapRegistryPage(
+      expectOk(await actor.list_spawned_automatons(cursor ? [cursor] : [], BigInt(limit)))
+    );
+  }
+
+  async getSpawnedAutomaton(canisterId: string): Promise<SpawnedAutomatonRecord | null> {
+    const actor = await this.getActor();
+    const response = await actor.get_spawned_automaton(canisterId);
+
+    if (isFactoryErrorVariant(response.Err, "RegistryRecordNotFound")) {
+      return null;
+    }
+
+    return mapRegistryRecord(expectOk(response));
+  }
+
+  async getFactoryHealth(): Promise<FactoryHealthSnapshot> {
+    const actor = await this.getActor();
+    return mapFactoryHealth(await actor.get_factory_health());
+  }
+
+  private async getAgent() {
+    this.agentPromise ??= (async () => {
+      const agent =
+        this.options.createAgent !== undefined
+          ? await this.options.createAgent(this.options.host)
+          : await HttpAgent.create({
+              host: this.options.host
+            });
+
+      if (!this.options.host.startsWith("https://")) {
+        await agent.fetchRootKey();
+      }
+
+      return agent;
+    })();
+
+    return this.agentPromise;
+  }
+
+  private async getActor() {
+    this.actorPromise ??= (async () => {
+      const agent = await this.getAgent();
+
+      if (this.options.createActor !== undefined) {
+        return this.options.createActor(agent, this.options.canisterId);
+      }
+
+      return Actor.createActor<FactoryCanisterActor>(
+        createFactoryIdl() as unknown as Parameters<typeof Actor.createActor>[0],
+        {
+          agent,
+          canisterId: this.options.canisterId
+        }
+      );
+    })();
+
+    return this.actorPromise;
+  }
+}

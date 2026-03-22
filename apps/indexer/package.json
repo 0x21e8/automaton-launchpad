@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "dev": "sh ../../scripts/with-repo-node.sh tsx watch src/server.ts",
+    "lint": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.json --noEmit",
+    "build": "sh ../../scripts/with-repo-node.sh tsc -p tsconfig.build.json",
+    "test": "sh ../../scripts/with-repo-node.sh vitest run"
   },
   "dependencies": {
+    "@dfinity/agent": "^3.4.3",
+    "@dfinity/candid": "^3.4.3",
     "@fastify/websocket": "^11.2.0",
     "@ic-automaton/shared": "0.1.0",
     "@icp-sdk/core": "^4.2.3",

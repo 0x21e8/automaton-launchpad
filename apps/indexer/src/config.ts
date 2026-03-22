@@ -71,6 +71,17 @@ function parseOriginList(value: string | undefined) {
     .filter((origin) => origin.length > 0);
 }
 
+function parseCanisterIdList(value: string | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return value
+    .split(",")
+    .map((canisterId) => canisterId.trim())
+    .filter((canisterId) => canisterId.length > 0);
+}
+
 function buildCrc32Table() {
   const table = new Uint32Array(256);
 
@@ -151,11 +162,20 @@ function isValidCanisterId(value: string) {
   return (checksum >>> 0) === computeCrc32(principal);
 }
 
-function validateTargetConfig(config: IndexerTargetConfig) {
+function validateTargetConfig(
+  config: IndexerTargetConfig,
+  options: {
+    allowEmptyCanisterIds?: boolean;
+  } = {}
+) {
   const errors: string[] = [];
 
-  if (!Array.isArray(config.canisterIds) || config.canisterIds.length === 0) {
-    errors.push("Indexer ingestion config must include at least one canister ID.");
+  if (!Array.isArray(config.canisterIds)) {
+    errors.push("Indexer ingestion config must include a canisterIds array.");
+  } else if (config.canisterIds.length === 0 && !options.allowEmptyCanisterIds) {
+    errors.push(
+      "Indexer ingestion config must include at least one canister ID when factory discovery is not configured."
+    );
   }
 
   for (const [index, canisterId] of config.canisterIds.entries()) {
@@ -218,6 +238,9 @@ function applyEnvIngestionOverrides(
   if (env.INDEXER_INGESTION_LOCAL_HOST !== undefined) {
     nextConfig.network.local.host = env.INDEXER_INGESTION_LOCAL_HOST;
   }
+  if (env.INDEXER_INGESTION_CANISTER_IDS !== undefined) {
+    nextConfig.canisterIds = parseCanisterIdList(env.INDEXER_INGESTION_CANISTER_IDS) ?? [];
+  }
 
   const localPort = parseOptionalInteger(env.INDEXER_INGESTION_LOCAL_PORT);
 
@@ -240,11 +263,15 @@ export function resolveIndexerConfig(
   env: NodeJS.ProcessEnv = process.env,
   overrides: IndexerConfigOverrides = {}
 ): IndexerConfig {
+  const factoryCanisterId =
+    overrides.factoryCanisterId ?? env.INDEXER_FACTORY_CANISTER_ID ?? undefined;
   const ingestion = applyEnvIngestionOverrides(
     overrides.ingestion ?? INDEXER_TARGET_CONFIG,
     env
   );
-  validateTargetConfig(ingestion);
+  validateTargetConfig(ingestion, {
+    allowEmptyCanisterIds: factoryCanisterId !== undefined
+  });
 
   return {
     host: overrides.host ?? env.HOST ?? "0.0.0.0",
@@ -255,8 +282,7 @@ export function resolveIndexerConfig(
       overrides.corsAllowedOrigins ??
       parseOriginList(env.INDEXER_CORS_ALLOWED_ORIGINS) ?? [...DEFAULT_CORS_ALLOWED_ORIGINS],
     ingestion,
-    factoryCanisterId:
-      overrides.factoryCanisterId ?? env.INDEXER_FACTORY_CANISTER_ID ?? undefined,
+    factoryCanisterId,
     icHost: resolveIcHost(ingestion),
     fastPollIntervalMs:
       overrides.fastPollIntervalMs ?? parseNumber(env.INDEXER_FAST_POLL_INTERVAL_MS, 15_000),

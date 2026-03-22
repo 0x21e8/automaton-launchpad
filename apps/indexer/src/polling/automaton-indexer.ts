@@ -1,11 +1,13 @@
 import type {
   AutomatonDetail,
   MonologueEntry,
-  RealtimeEvent
+  RealtimeEvent,
+  SpawnedAutomatonRecord
 } from "@ic-automaton/shared";
 
 import type { IndexerConfig } from "../config.js";
 import type { AutomatonClient } from "../integrations/automaton-client.js";
+import type { FactoryClient } from "../integrations/factory-client.js";
 import { diffAutomatonRecord } from "../lib/automaton-record.js";
 import { normalizeAutomatonDetail, normalizeMonologueEntries } from "../normalize/automaton.js";
 import type { IndexerStore } from "../store/sqlite.js";
@@ -89,6 +91,7 @@ export interface AutomatonIndexerOptions {
   client: AutomatonClient;
   config: IndexerConfig;
   eventPublisher?: RealtimeEventPublisher;
+  factoryClient?: Pick<FactoryClient, "isConfigured" | "listSpawnedAutomatons">;
   priceSource?: EthUsdPriceSource;
   store: IndexerStore;
 }
@@ -101,8 +104,10 @@ export class AutomatonIndexer {
   private readonly client: AutomatonClient;
   private readonly config: IndexerConfig;
   private eventPublisher?: RealtimeEventPublisher;
+  private readonly factoryClient?: Pick<FactoryClient, "isConfigured" | "listSpawnedAutomatons">;
   private readonly priceSource: EthUsdPriceSource;
   private readonly store: IndexerStore;
+  private factoryDiscoveryInFlight = false;
 
   private readonly snapshot: AutomatonIndexerSnapshot = {
     startedAt: null,
@@ -117,6 +122,7 @@ export class AutomatonIndexer {
     this.client = options.client;
     this.config = options.config;
     this.store = options.store;
+    this.factoryClient = options.factoryClient;
     this.priceSource = options.priceSource ?? new FixedEthUsdPriceSource();
     this.eventPublisher = options.eventPublisher;
   }
@@ -137,6 +143,7 @@ export class AutomatonIndexer {
     this.schedule(this.config.fastPollIntervalMs, () => this.pollRuntimeNow());
     this.schedule(this.config.fastPollIntervalMs, () => this.pollMonologueNow());
     this.schedule(this.config.pricePollIntervalMs, () => this.refreshPriceNow());
+    this.schedule(this.config.slowPollIntervalMs, () => this.syncFactoryRegistryNow());
   }
 
   async stop() {
@@ -175,7 +182,7 @@ export class AutomatonIndexer {
   }
 
   async pollIdentityNow() {
-    for (const canisterId of this.config.ingestion.canisterIds) {
+    for (const canisterId of await this.listTrackedCanisterIds()) {
       await this.runPoll(canisterId, "identity", async () => {
         const existingDetail = await this.store.getAutomatonDetail(canisterId);
         const identity = await this.client.readIdentityConfig(canisterId);
@@ -194,7 +201,7 @@ export class AutomatonIndexer {
   }
 
   async pollRuntimeNow() {
-    for (const canisterId of this.config.ingestion.canisterIds) {
+    for (const canisterId of await this.listTrackedCanisterIds()) {
       await this.runPoll(canisterId, "runtime", async () => {
         const existingDetail = await this.store.getAutomatonDetail(canisterId);
         const runtime = await this.client.readRuntimeFinancial(canisterId);
@@ -213,7 +220,7 @@ export class AutomatonIndexer {
   }
 
   async pollMonologueNow() {
-    for (const canisterId of this.config.ingestion.canisterIds) {
+    for (const canisterId of await this.listTrackedCanisterIds()) {
       await this.runPoll(canisterId, "monologue", async () => {
         const turns = await this.client.readRecentTurns(canisterId);
         const entries = normalizeMonologueEntries(turns.recentTurns);
@@ -250,6 +257,21 @@ export class AutomatonIndexer {
           });
         }
       });
+    }
+  }
+
+  async syncFactoryRegistryNow() {
+    if (!this.factoryClient?.isConfigured() || this.factoryDiscoveryInFlight) {
+      return;
+    }
+
+    this.factoryDiscoveryInFlight = true;
+
+    try {
+      const records = await this.readFactoryRegistry();
+      await this.store.replaceSpawnedAutomatonRegistry(records);
+    } finally {
+      this.factoryDiscoveryInFlight = false;
     }
   }
 
@@ -292,6 +314,23 @@ export class AutomatonIndexer {
 
   private createMonologueKey(entry: MonologueEntry) {
     return `${entry.timestamp}:${entry.turnId}`;
+  }
+
+  private async listTrackedCanisterIds() {
+    return this.store.listTrackedCanisterIds();
+  }
+
+  private async readFactoryRegistry() {
+    const records: SpawnedAutomatonRecord[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const page = await this.factoryClient!.listSpawnedAutomatons(cursor, 100);
+      records.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+
+    return records;
   }
 
   private async runPoll(

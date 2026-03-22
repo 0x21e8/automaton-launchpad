@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +13,13 @@ import {
   createSpawnedAutomatonRecordFixture
 } from "./fixtures.js";
 
+const require = createRequire(import.meta.url);
+const BetterSqlite3 = require("better-sqlite3") as {
+  new (path: string): {
+    close(): void;
+    prepare<T>(sql: string): { all(): T[] };
+  };
+};
 const tempPaths: string[] = [];
 
 afterEach(async () => {
@@ -41,6 +49,7 @@ describe("sqlite store", () => {
       driver: "better-sqlite3",
       counts: {
         configuredCanisters: 0,
+        trackedCanisters: 0,
         automatons: 0,
         monologueEntries: 0,
         spawnSessions: 0,
@@ -86,6 +95,7 @@ describe("sqlite store", () => {
     await expect(store.getHealth()).resolves.toMatchObject({
       counts: {
         configuredCanisters: 2,
+        trackedCanisters: 2,
         automatons: 0
       }
     });
@@ -143,8 +153,9 @@ describe("sqlite store", () => {
   });
 
   it("persists spawn sessions separately from the public automaton list", async () => {
+    const databasePath = await createDatabasePath();
     const store = createSqliteStore({
-      databasePath: await createDatabasePath()
+      databasePath
     });
     const detail = createSpawnSessionDetailFixture();
     const secondRecord = createSpawnedAutomatonRecordFixture({
@@ -166,6 +177,19 @@ describe("sqlite store", () => {
 
     await expect(store.getSpawnSessionDetail(detail.session.sessionId)).resolves.toEqual(detail);
 
+    const database = new BetterSqlite3(databasePath);
+    const columns = database
+      .prepare<{ name: string }>("PRAGMA table_info(spawn_sessions);")
+      .all()
+      .map((column) => column.name);
+    database.close();
+
+    expect(columns).toContain("claim_id");
+    expect(columns).toContain("payment_json");
+    expect(columns).toContain("release_tx_hash");
+    expect(columns).toContain("release_broadcast_at");
+    expect(columns).not.toContain("escrow_json");
+
     await expect(
       store.listSpawnedAutomatonRegistry({
         limit: 10
@@ -178,9 +202,65 @@ describe("sqlite store", () => {
     await expect(store.getHealth()).resolves.toMatchObject({
       counts: {
         spawnSessions: 1,
+        spawnedAutomatonRegistryRecords: 2,
+        trackedCanisters: 2
+      }
+    });
+
+    await store.close();
+  });
+
+  it("tracks live polling canister ids as the union of seeds and factory registry records", async () => {
+    const store = createSqliteStore({
+      databasePath: await createDatabasePath()
+    });
+    const sharedCanisterId = "ryjl3-tyaaa-aaaaa-aaaba-cai";
+    const factoryOnlyCanisterId = "txyno-ch777-77776-aaaaq-cai";
+
+    await store.initialize();
+    await store.syncConfiguredCanisterIds([sharedCanisterId]);
+    await store.replaceSpawnedAutomatonRegistry([
+      createSpawnedAutomatonRecordFixture({
+        canisterId: sharedCanisterId
+      }),
+      createSpawnedAutomatonRecordFixture({
+        canisterId: factoryOnlyCanisterId,
+        sessionId: "session-1709912345000-2"
+      })
+    ]);
+
+    await expect(store.listConfiguredCanisterIds()).resolves.toEqual([sharedCanisterId]);
+    await expect(store.listFactoryDiscoveredCanisterIds()).resolves.toEqual([
+      sharedCanisterId,
+      factoryOnlyCanisterId
+    ]);
+    await expect(store.listTrackedCanisterIds()).resolves.toEqual([
+      sharedCanisterId,
+      factoryOnlyCanisterId
+    ]);
+
+    await expect(store.getHealth()).resolves.toMatchObject({
+      counts: {
+        configuredCanisters: 1,
+        trackedCanisters: 2,
         spawnedAutomatonRegistryRecords: 2
       }
     });
+
+    await store.replaceSpawnedAutomatonRegistry([
+      createSpawnedAutomatonRecordFixture({
+        canisterId: factoryOnlyCanisterId,
+        sessionId: "session-1709912345000-3"
+      })
+    ]);
+
+    await expect(store.listFactoryDiscoveredCanisterIds()).resolves.toEqual([
+      factoryOnlyCanisterId
+    ]);
+    await expect(store.listTrackedCanisterIds()).resolves.toEqual([
+      sharedCanisterId,
+      factoryOnlyCanisterId
+    ]);
 
     await store.close();
   });

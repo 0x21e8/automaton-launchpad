@@ -54,6 +54,7 @@ export interface StoreHealth {
   databasePath: string;
   counts: {
     configuredCanisters: number;
+    trackedCanisters: number;
     automatons: number;
     monologueEntries: number;
     spawnSessions: number;
@@ -71,6 +72,8 @@ export interface IndexerStore {
   close(): Promise<void>;
   getHealth(): Promise<StoreHealth>;
   listConfiguredCanisterIds(): Promise<string[]>;
+  listFactoryDiscoveredCanisterIds(): Promise<string[]>;
+  listTrackedCanisterIds(): Promise<string[]>;
   syncConfiguredCanisterIds(canisterIds: string[]): Promise<void>;
   listAutomatons(filters?: AutomatonFilters): Promise<AutomatonListResponse>;
   getAutomatonDetail(canisterId: string): Promise<AutomatonDetail | null>;
@@ -85,6 +88,7 @@ export interface IndexerStore {
   }>;
   getSpawnedAutomatonRegistryRecord(canisterId: string): Promise<SpawnedAutomatonRecord | null>;
   upsertSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]): Promise<void>;
+  replaceSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]): Promise<void>;
   setPrice(symbol: string, value: number | null): Promise<void>;
 }
 
@@ -135,6 +139,110 @@ async function loadSchemaSql() {
   throw new Error("Unable to locate SQLite schema.sql");
 }
 
+function tableHasColumn(
+  database: BetterSqliteDatabase,
+  tableName: string,
+  columnName: string
+) {
+  const rows = database
+    .prepare<{ name: string }>(`PRAGMA table_info(${tableName});`)
+    .all();
+
+  return rows.some((row) => row.name === columnName);
+}
+
+function migrateSpawnSessionsSchema(database: BetterSqliteDatabase) {
+  const hasEscrowJson = tableHasColumn(database, "spawn_sessions", "escrow_json");
+  const hasClaimId = tableHasColumn(database, "spawn_sessions", "claim_id");
+  const hasPaymentJson = tableHasColumn(database, "spawn_sessions", "payment_json");
+  const hasReleaseTxHash = tableHasColumn(database, "spawn_sessions", "release_tx_hash");
+  const hasReleaseBroadcastAt = tableHasColumn(
+    database,
+    "spawn_sessions",
+    "release_broadcast_at"
+  );
+
+  if (
+    !hasEscrowJson &&
+    hasClaimId &&
+    hasPaymentJson &&
+    hasReleaseTxHash &&
+    hasReleaseBroadcastAt
+  ) {
+    return;
+  }
+
+  const claimIdExpression = hasClaimId
+    ? "COALESCE(claim_id, json_extract(session_json, '$.claimId'))"
+    : "json_extract(session_json, '$.claimId')";
+  const paymentJsonExpression = hasPaymentJson ? "payment_json" : "NULL";
+  const releaseTxHashExpression = hasReleaseTxHash
+    ? "COALESCE(release_tx_hash, json_extract(session_json, '$.releaseTxHash'))"
+    : "json_extract(session_json, '$.releaseTxHash')";
+  const releaseBroadcastAtExpression = hasReleaseBroadcastAt
+    ? "COALESCE(release_broadcast_at, json_extract(session_json, '$.releaseBroadcastAt'))"
+    : "json_extract(session_json, '$.releaseBroadcastAt')";
+
+  database.exec(`
+    ALTER TABLE spawn_sessions RENAME TO spawn_sessions_legacy;
+
+    CREATE TABLE spawn_sessions (
+      session_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      payment_status TEXT NOT NULL,
+      retryable INTEGER NOT NULL,
+      refundable INTEGER NOT NULL,
+      claim_id TEXT NOT NULL,
+      release_tx_hash TEXT,
+      release_broadcast_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      session_json TEXT NOT NULL,
+      payment_json TEXT,
+      audit_json TEXT NOT NULL,
+      registry_json TEXT
+    );
+
+    INSERT INTO spawn_sessions (
+      session_id,
+      state,
+      payment_status,
+      retryable,
+      refundable,
+      claim_id,
+      release_tx_hash,
+      release_broadcast_at,
+      updated_at,
+      session_json,
+      payment_json,
+      audit_json,
+      registry_json
+    )
+    SELECT
+      session_id,
+      state,
+      payment_status,
+      retryable,
+      refundable,
+      ${claimIdExpression},
+      ${releaseTxHashExpression},
+      ${releaseBroadcastAtExpression},
+      updated_at,
+      session_json,
+      ${paymentJsonExpression},
+      audit_json,
+      registry_json
+    FROM spawn_sessions_legacy;
+
+    DROP TABLE spawn_sessions_legacy;
+  `);
+}
+
+function normalizeRegistryRecords(records: SpawnedAutomatonRecord[]) {
+  return [...new Map(records.map((record) => [record.canisterId, record])).values()].sort(
+    (left, right) => left.canisterId.localeCompare(right.canisterId)
+  );
+}
+
 class BetterSqliteStore implements IndexerStore {
   readonly databasePath: string;
 
@@ -154,7 +262,10 @@ class BetterSqliteStore implements IndexerStore {
 
     await mkdir(dirname(this.databasePath), { recursive: true });
     this.database = new BetterSqlite3(this.databasePath);
-    this.database.exec(await this.schemaSqlPromise);
+    const schemaSql = await this.schemaSqlPromise;
+    this.database.exec(schemaSql);
+    migrateSpawnSessionsSchema(this.database);
+    this.database.exec(schemaSql);
     this.initialized = true;
   }
 
@@ -182,6 +293,16 @@ class BetterSqliteStore implements IndexerStore {
     const spawnRegistryCountRow = database
       .prepare<{ count: number }>("SELECT COUNT(*) AS count FROM spawned_automaton_registry;")
       .get();
+    const trackedCanisterCountRow = database
+      .prepare<{ count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM (
+           SELECT canister_id FROM configured_canisters
+           UNION
+           SELECT canister_id FROM spawned_automaton_registry
+         );`
+      )
+      .get();
 
     return {
       ok: true,
@@ -189,6 +310,7 @@ class BetterSqliteStore implements IndexerStore {
       databasePath: this.databasePath,
       counts: {
         configuredCanisters: Number(configuredCanisterCountRow?.count ?? 0),
+        trackedCanisters: Number(trackedCanisterCountRow?.count ?? 0),
         automatons: Number(automatonCountRow?.count ?? 0),
         monologueEntries: Number(monologueCountRow?.count ?? 0),
         spawnSessions: Number(spawnSessionCountRow?.count ?? 0),
@@ -204,6 +326,37 @@ class BetterSqliteStore implements IndexerStore {
       .prepare<{ canister_id: string }>(
         `SELECT canister_id
          FROM configured_canisters
+         ORDER BY canister_id ASC;`
+      )
+      .all();
+
+    return rows.map((row) => row.canister_id);
+  }
+
+  async listFactoryDiscoveredCanisterIds() {
+    await this.initialize();
+    const database = this.getDatabase();
+    const rows = database
+      .prepare<{ canister_id: string }>(
+        `SELECT canister_id
+         FROM spawned_automaton_registry
+         ORDER BY canister_id ASC;`
+      )
+      .all();
+
+    return rows.map((row) => row.canister_id);
+  }
+
+  async listTrackedCanisterIds() {
+    await this.initialize();
+    const database = this.getDatabase();
+    const rows = database
+      .prepare<{ canister_id: string }>(
+        `SELECT canister_id
+         FROM configured_canisters
+         UNION
+         SELECT canister_id
+         FROM spawned_automaton_registry
          ORDER BY canister_id ASC;`
       )
       .all();
@@ -414,11 +567,11 @@ class BetterSqliteStore implements IndexerStore {
     const row = database
       .prepare<{
         session_json: string;
+        payment_json: string | null;
         audit_json: string;
-        escrow_json: string | null;
         registry_json: string | null;
       }>(
-        `SELECT session_json, audit_json, escrow_json, registry_json
+        `SELECT session_json, payment_json, audit_json, registry_json
          FROM spawn_sessions
          WHERE session_id = ?
          LIMIT 1;`
@@ -429,13 +582,14 @@ class BetterSqliteStore implements IndexerStore {
       return null;
     }
 
+    if (row.payment_json === null) {
+      return null;
+    }
+
     return {
       session: JSON.parse(row.session_json) as SpawnSessionDetail["session"],
+      payment: JSON.parse(row.payment_json) as SpawnSessionDetail["payment"],
       audit: JSON.parse(row.audit_json) as SpawnSessionDetail["audit"],
-      escrow:
-        row.escrow_json === null
-          ? null
-          : (JSON.parse(row.escrow_json) as SpawnSessionDetail["escrow"]),
       registryRecord:
         row.registry_json === null
           ? null
@@ -455,21 +609,27 @@ class BetterSqliteStore implements IndexerStore {
           payment_status,
           retryable,
           refundable,
+          claim_id,
+          release_tx_hash,
+          release_broadcast_at,
           updated_at,
           session_json,
+          payment_json,
           audit_json,
-          escrow_json,
           registry_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
           state = excluded.state,
           payment_status = excluded.payment_status,
           retryable = excluded.retryable,
           refundable = excluded.refundable,
+          claim_id = excluded.claim_id,
+          release_tx_hash = excluded.release_tx_hash,
+          release_broadcast_at = excluded.release_broadcast_at,
           updated_at = excluded.updated_at,
           session_json = excluded.session_json,
+          payment_json = excluded.payment_json,
           audit_json = excluded.audit_json,
-          escrow_json = excluded.escrow_json,
           registry_json = excluded.registry_json;`
       )
       .run(
@@ -478,10 +638,13 @@ class BetterSqliteStore implements IndexerStore {
         detail.session.paymentStatus,
         detail.session.retryable ? 1 : 0,
         detail.session.refundable ? 1 : 0,
+        detail.session.claimId,
+        detail.session.releaseTxHash,
+        detail.session.releaseBroadcastAt,
         detail.session.updatedAt,
         JSON.stringify(detail.session),
+        JSON.stringify(detail.payment),
         JSON.stringify(detail.audit),
-        detail.escrow ? JSON.stringify(detail.escrow) : null,
         detail.registryRecord ? JSON.stringify(detail.registryRecord) : null
       );
 
@@ -546,8 +709,9 @@ class BetterSqliteStore implements IndexerStore {
   async upsertSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]) {
     await this.initialize();
     const database = this.getDatabase();
+    const normalizedRecords = normalizeRegistryRecords(records);
 
-    if (records.length === 0) {
+    if (normalizedRecords.length === 0) {
       return;
     }
 
@@ -585,7 +749,62 @@ class BetterSqliteStore implements IndexerStore {
       }
     });
 
-    upsertRecords(records);
+    upsertRecords(normalizedRecords);
+  }
+
+  async replaceSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]) {
+    await this.initialize();
+    const database = this.getDatabase();
+    const normalizedRecords = normalizeRegistryRecords(records);
+    const updatedAt = Date.now();
+    const upsertStatement = database.prepare(
+      `INSERT INTO spawned_automaton_registry (
+        canister_id,
+        session_id,
+        steward_address,
+        chain,
+        created_at,
+        updated_at,
+        record_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(canister_id) DO UPDATE SET
+        session_id = excluded.session_id,
+        steward_address = excluded.steward_address,
+        chain = excluded.chain,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        record_json = excluded.record_json;`
+    );
+    const deleteAllStatement = database.prepare("DELETE FROM spawned_automaton_registry;");
+    const deleteMissingStatement =
+      normalizedRecords.length > 0
+        ? database.prepare(
+            `DELETE FROM spawned_automaton_registry
+             WHERE canister_id NOT IN (${normalizedRecords.map(() => "?").join(", ")});`
+          )
+        : null;
+    const replaceRecords = database.transaction((registryRecords: SpawnedAutomatonRecord[]) => {
+      if (registryRecords.length === 0) {
+        deleteAllStatement.run();
+        return;
+      }
+
+      for (const record of registryRecords) {
+        upsertStatement.run(
+          record.canisterId,
+          record.sessionId,
+          record.stewardAddress,
+          record.chain,
+          record.createdAt,
+          updatedAt,
+          JSON.stringify(record)
+        );
+      }
+
+      deleteMissingStatement?.run(...registryRecords.map((record) => record.canisterId));
+    });
+
+    replaceRecords(normalizedRecords);
   }
 
   async setPrice(symbol: string, value: number | null) {

@@ -30,6 +30,18 @@ describe("indexer config", () => {
     expect(config.icHost).toBe("https://ic0.app");
   });
 
+  it("allows deployment-time env overrides for seed canister ids", () => {
+    const config = resolveIndexerConfig({
+      INDEXER_INGESTION_CANISTER_IDS:
+        "ryjl3-tyaaa-aaaaa-aaaba-cai, txyno-ch777-77776-aaaaq-cai"
+    });
+
+    expect(config.ingestion.canisterIds).toEqual([
+      "ryjl3-tyaaa-aaaaa-aaaba-cai",
+      "txyno-ch777-77776-aaaaq-cai"
+    ]);
+  });
+
   it("derives the IC host from the configured network target", () => {
     const config = resolveIndexerConfig(
       {},
@@ -89,7 +101,31 @@ describe("indexer config", () => {
           }
         }
       )
-    ).toThrowError("Indexer ingestion config must include at least one canister ID.");
+    ).toThrowError(
+      "Indexer ingestion config must include at least one canister ID when factory discovery is not configured."
+    );
+  });
+
+  it("allows an empty seed list when factory discovery is configured", () => {
+    const config = resolveIndexerConfig(
+      {},
+      {
+        ingestion: {
+          canisterIds: [],
+          network: {
+            target: "local",
+            local: {
+              host: "localhost",
+              port: 8000
+            }
+          }
+        },
+        factoryCanisterId: "ryjl3-tyaaa-aaaaa-aaaba-cai"
+      }
+    );
+
+    expect(config.ingestion.canisterIds).toEqual([]);
+    expect(config.factoryCanisterId).toBe("ryjl3-tyaaa-aaaaa-aaaba-cai");
   });
 
   it("fails when a canister ID format is invalid", () => {
@@ -173,7 +209,9 @@ describe("indexer config", () => {
           }
         }
       })
-    ).toThrowError("Invalid indexer ingestion config:");
+    ).toThrowError(
+      "Indexer ingestion config must include at least one canister ID when factory discovery is not configured."
+    );
   });
 
   it("formats invalid ingestion startup failures with config guidance", () => {

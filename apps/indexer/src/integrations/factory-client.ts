@@ -8,6 +8,32 @@ import type {
   SpawnedAutomatonRegistryPage
 } from "@ic-automaton/shared";
 
+import { CanisterFactoryAdapter } from "./factory-canister-adapter.js";
+
+export interface FactoryHealthSnapshot {
+  activeSessions: {
+    activeTotal: number;
+    awaitingPayment: number;
+    broadcastingRelease: number;
+    paymentDetected: number;
+    retryableFailed: number;
+    spawning: number;
+  };
+  artifact: {
+    loaded: boolean;
+    versionCommit: string | null;
+    wasmSha256: string | null;
+    wasmSizeBytes: number | null;
+  };
+  currentCanisterBalance: string;
+  cyclesPerSpawn: number;
+  escrowContractAddress: string;
+  estimatedOutcallCyclesPerInterval: number;
+  factoryEvmAddress: string | null;
+  minPoolBalance: number;
+  pause: boolean;
+}
+
 export interface FactoryAdapter {
   createSpawnSession(
     request: CreateSpawnSessionRequest
@@ -20,6 +46,7 @@ export interface FactoryAdapter {
     limit: number
   ): Promise<SpawnedAutomatonRegistryPage>;
   getSpawnedAutomaton(canisterId: string): Promise<SpawnedAutomatonRecord | null>;
+  getFactoryHealth(): Promise<FactoryHealthSnapshot>;
 }
 
 export interface FactorySessionSnapshot extends SpawnSessionStatusResponse {
@@ -53,20 +80,44 @@ class UnconfiguredFactoryAdapter implements FactoryAdapter {
   async getSpawnedAutomaton(): Promise<null> {
     return null;
   }
+
+  async getFactoryHealth(): Promise<FactoryHealthSnapshot> {
+    throw new Error("Factory adapter is not configured.");
+  }
+}
+
+function redactProviderSecrets(
+  config: SpawnSessionStatusResponse["session"]["config"]
+): SpawnSessionStatusResponse["session"]["config"] {
+  return {
+    ...config,
+    provider: {
+      ...config.provider,
+      openRouterApiKey: null,
+      braveSearchApiKey: null
+    },
+    strategies: [...config.strategies],
+    skills: [...config.skills]
+  };
+}
+
+function normalizeSession(
+  session: SpawnSessionStatusResponse["session"]
+): SpawnSessionStatusResponse["session"] {
+  return {
+    ...session,
+    childIds: [...session.childIds],
+    config: redactProviderSecrets(session.config)
+  };
 }
 
 function normalizeSessionStatus(
   response: SpawnSessionStatusResponse
 ): SpawnSessionStatusResponse {
   return {
-    session: {
-      ...response.session,
-      childIds: [...response.session.childIds],
-      config: {
-        ...response.session.config,
-        strategies: [...response.session.config.strategies],
-        skills: [...response.session.config.skills]
-      }
+    session: normalizeSession(response.session),
+    payment: {
+      ...response.payment
     },
     audit: response.audit.map((entry) => ({ ...entry }))
   };
@@ -76,10 +127,7 @@ function normalizeCreateSpawnSessionResponse(
   response: CreateSpawnSessionResponse
 ): CreateSpawnSessionResponse {
   return {
-    session: normalizeSessionStatus({
-      session: response.session,
-      audit: []
-    }).session,
+    session: normalizeSession(response.session),
     quote: {
       ...response.quote,
       payment: {
@@ -112,6 +160,16 @@ export class FactoryClient {
   } = {}) {
     this.adapter = options.adapter ?? new UnconfiguredFactoryAdapter();
     this.configured = options.configured ?? options.adapter !== undefined;
+  }
+
+  static createCanisterBacked(options: {
+    canisterId: string;
+    host: string;
+  }) {
+    return new FactoryClient({
+      adapter: new CanisterFactoryAdapter(options),
+      configured: true
+    });
   }
 
   isConfigured() {
@@ -148,10 +206,7 @@ export class FactoryClient {
     const response = await this.adapter.retrySpawnSession(sessionId);
 
     return {
-      session: normalizeSessionStatus({
-        session: response.session,
-        audit: []
-      }).session
+      session: normalizeSession(response.session)
     };
   }
 
@@ -179,5 +234,13 @@ export class FactoryClient {
   async getSpawnedAutomaton(canisterId: string): Promise<SpawnedAutomatonRecord | null> {
     const record = await this.adapter.getSpawnedAutomaton(canisterId);
     return normalizeRegistryRecord(record);
+  }
+
+  async getFactoryHealth(): Promise<FactoryHealthSnapshot | null> {
+    if (!this.configured) {
+      return null;
+    }
+
+    return this.adapter.getFactoryHealth();
   }
 }
