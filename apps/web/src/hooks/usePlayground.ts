@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { PlaygroundMetadata } from "@ic-automaton/shared";
 
 import { fetchPlaygroundMetadata } from "../api/playground";
+import { getErrorMessage } from "../lib/errors";
 import { resolveSpawnChainMetadata } from "../lib/wallet-transaction-helpers";
 
 const DEFAULT_PLAYGROUND_LABEL = "Local development";
@@ -18,12 +19,6 @@ export interface UsePlaygroundResult {
 function readOptionalString(value: string | undefined) {
   const normalized = value?.trim();
   return normalized ? normalized : null;
-}
-
-function getErrorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : "Failed to load runtime playground metadata.";
 }
 
 export function createFallbackPlaygroundMetadata(
@@ -124,7 +119,7 @@ export function usePlayground(): UsePlaygroundResult {
 
         setMetadata(fallbackPlaygroundMetadata);
         setHasRuntimeMetadata(false);
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Failed to load runtime playground metadata."));
       })
       .finally(() => {
         if (!controller.signal.aborted) {

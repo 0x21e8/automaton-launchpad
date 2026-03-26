@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { fetchAutomatons } from "../api/indexer";
 import { subscribeToRealtimeEvents } from "../api/ws";
+import { getErrorMessage } from "../lib/errors";
 
 interface UseAutomatonsOptions {
   scope: "all" | "mine";
@@ -16,10 +17,6 @@ const emptyResponse: AutomatonListResponse = {
     ethUsd: null
   }
 };
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown automaton feed error.";
-}
 
 export function useAutomatons({ scope, viewerAddress }: UseAutomatonsOptions) {
   const [response, setResponse] = useState<AutomatonListResponse>(emptyResponse);
@@ -46,7 +43,7 @@ export function useAutomatons({ scope, viewerAddress }: UseAutomatonsOptions) {
         }
 
         setResponse(emptyResponse);
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Unknown automaton feed error."));
       })
       .finally(() => {
         if (!controller.signal.aborted) {

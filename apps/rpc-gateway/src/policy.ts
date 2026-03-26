@@ -118,10 +118,28 @@ export function createIpRateLimiter(options: {
 }) {
   const now = options.now ?? Date.now;
   const entries = new Map<string, { count: number; resetAt: number }>();
+  let nextPruneAt = 0;
+
+  function pruneExpired(currentTime: number) {
+    if (currentTime < nextPruneAt) {
+      return;
+    }
+
+    for (const [ip, entry] of entries) {
+      if (entry.resetAt <= currentTime) {
+        entries.delete(ip);
+      }
+    }
+
+    nextPruneAt = currentTime + options.windowMs;
+  }
 
   return {
     check(ip: string): IpRateLimitResult {
       const currentTime = now();
+
+      pruneExpired(currentTime);
+
       const entry = entries.get(ip);
 
       if (entry === undefined || entry.resetAt <= currentTime) {

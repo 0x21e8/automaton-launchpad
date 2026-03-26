@@ -3,10 +3,7 @@ import { useEffect, useState } from "react";
 
 import { fetchAutomatonDetail } from "../api/indexer";
 import { subscribeToRealtimeEvents } from "../api/ws";
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown automaton detail error.";
-}
+import { getErrorMessage } from "../lib/errors";
 
 function mergeMonologueEntries(
   existingEntries: ReadonlyArray<AutomatonDetail["monologue"][number]>,
@@ -58,7 +55,7 @@ export function useAutomatonDetail(canisterId: string | null) {
         }
 
         setAutomaton(null);
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Unknown automaton detail error."));
       })
       .finally(() => {
         if (!controller.signal.aborted) {

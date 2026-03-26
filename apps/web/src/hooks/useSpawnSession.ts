@@ -14,12 +14,9 @@ import {
   retrySpawnSession
 } from "../api/spawn";
 import { subscribeToRealtimeEvents } from "../api/ws";
+import { getErrorMessage } from "../lib/errors";
 
 const SPAWN_SESSION_POLL_INTERVAL_MS = 4_000;
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown spawn session error.";
-}
 
 function isPollingComplete(session: SpawnSession | null): boolean {
   if (session === null) {
@@ -130,7 +127,7 @@ export function useSpawnSession() {
       setError(null);
       return nextDetail;
     } catch (nextError: unknown) {
-      setError(getErrorMessage(nextError));
+      setError(getErrorMessage(nextError, "Unknown spawn session error."));
       return null;
     } finally {
       setIsRefreshing(false);
@@ -225,7 +222,7 @@ export function useSpawnSession() {
         setRefreshToken((current) => current + 1);
         return response;
       } catch (nextError: unknown) {
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Unknown spawn session error."));
         return null;
       } finally {
         setIsCreating(false);
@@ -244,7 +241,7 @@ export function useSpawnSession() {
         setRefreshToken((current) => current + 1);
         return await refresh(sessionId);
       } catch (nextError: unknown) {
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Unknown spawn session error."));
         return null;
       } finally {
         setIsMutating(false);
@@ -263,7 +260,7 @@ export function useSpawnSession() {
         setRefreshToken((current) => current + 1);
         return await refresh(sessionId);
       } catch (nextError: unknown) {
-        setError(getErrorMessage(nextError));
+        setError(getErrorMessage(nextError, "Unknown spawn session error."));
         return null;
       } finally {
         setIsMutating(false);
