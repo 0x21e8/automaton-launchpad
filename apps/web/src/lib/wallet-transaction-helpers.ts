@@ -1,11 +1,24 @@
 import type { SpawnChain } from "@ic-automaton/shared";
 
 const BASE_CHAIN_ID = 8453;
+const DEFAULT_BASE_CHAIN_NAME = "Base";
+const DEFAULT_BASE_CURRENCY_NAME = "Ether";
+const DEFAULT_BASE_CURRENCY_SYMBOL = "ETH";
+const DEFAULT_BASE_BLOCK_EXPLORER_URL = "https://basescan.org";
 const DEFAULT_BASE_USDC_CONTRACT_ADDRESS =
   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
 const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
 const ESCROW_DEPOSIT_SELECTOR = "0x1de26e16";
+
+export interface WalletChainMetadata {
+  chainId: number;
+  chainName: string;
+  rpcUrl: string | null;
+  currencyName: string;
+  currencySymbol: string;
+  blockExplorerUrl: string | null;
+}
 
 export function stripHexPrefix(value: string): string {
   return value.startsWith("0x") || value.startsWith("0X") ? value.slice(2) : value;
@@ -105,6 +118,42 @@ export function resolveSpawnChainId(chain: SpawnChain): number | null {
   switch (chain) {
     case "base":
       return BASE_CHAIN_ID;
+    default:
+      return null;
+  }
+}
+
+function resolveOptionalString(value: string | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+export function resolveSpawnChainMetadata(
+  chain: SpawnChain,
+  env: Record<string, string | undefined> = import.meta.env
+): WalletChainMetadata | null {
+  const chainId = resolveSpawnChainId(chain);
+
+  if (chainId === null) {
+    return null;
+  }
+
+  switch (chain) {
+    case "base":
+      return {
+        chainId,
+        chainName: resolveOptionalString(env.VITE_SPAWN_CHAIN_NAME) ?? DEFAULT_BASE_CHAIN_NAME,
+        rpcUrl: resolveOptionalString(env.VITE_SPAWN_CHAIN_RPC_URL),
+        currencyName:
+          resolveOptionalString(env.VITE_SPAWN_CHAIN_CURRENCY_NAME) ??
+          DEFAULT_BASE_CURRENCY_NAME,
+        currencySymbol:
+          resolveOptionalString(env.VITE_SPAWN_CHAIN_CURRENCY_SYMBOL) ??
+          DEFAULT_BASE_CURRENCY_SYMBOL,
+        blockExplorerUrl:
+          resolveOptionalString(env.VITE_SPAWN_CHAIN_BLOCK_EXPLORER_URL) ??
+          DEFAULT_BASE_BLOCK_EXPLORER_URL
+      };
     default:
       return null;
   }

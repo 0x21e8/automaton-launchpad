@@ -76,6 +76,7 @@ describe("spawn payment executor", () => {
   it("submits approval and deposit transactions using session instructions", async () => {
     const request = vi
       .fn()
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce("0xapprove")
       .mockResolvedValueOnce("0xdeposit");
 
@@ -95,6 +96,10 @@ describe("spawn payment executor", () => {
     );
 
     expect(request).toHaveBeenNthCalledWith(1, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x2105" }]
+    });
+    expect(request).toHaveBeenNthCalledWith(2, {
       method: "eth_sendTransaction",
       params: [
         {
@@ -106,7 +111,82 @@ describe("spawn payment executor", () => {
         }
       ]
     });
+    expect(request).toHaveBeenNthCalledWith(3, {
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+          to: "0x2222222222222222222222222222222222222222",
+          data: `0x1de26e16${payment.claimId.slice(2)}00000000000000000000000000000000000000000000000000000000047c3950`,
+          value: "0x0"
+        }
+      ]
+    });
+    expect(result).toEqual({
+      approvalTxHash: "0xapprove",
+      paymentTxHash: "0xdeposit"
+    });
+  });
+
+  it("adds the configured local chain when the wallet does not know chain 8453 yet", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("0xapprove")
+      .mockResolvedValueOnce("0xdeposit");
+
+    const payment = createPayment({
+      grossAmount: "75.25",
+      paymentAddress: "0x2222222222222222222222222222222222222222"
+    });
+
+    const result = await executeSpawnPayment(
+      payment,
+      "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      { request },
+      {
+        VITE_SPAWN_CHAIN_NAME: "Base Local Fork",
+        VITE_SPAWN_CHAIN_RPC_URL: "http://127.0.0.1:18545",
+        VITE_SPAWN_CHAIN_BLOCK_EXPLORER_URL: "",
+        VITE_SPAWN_USDC_CONTRACT_ADDRESS:
+          "0x3333333333333333333333333333333333333333"
+      }
+    );
+
+    expect(request).toHaveBeenNthCalledWith(1, {
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: "0x2105",
+          chainName: "Base Local Fork",
+          rpcUrls: ["http://127.0.0.1:18545"],
+          nativeCurrency: {
+            name: "Ether",
+            symbol: "ETH",
+            decimals: 18
+          },
+          blockExplorerUrls: ["https://basescan.org"]
+        }
+      ]
+    });
     expect(request).toHaveBeenNthCalledWith(2, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x2105" }]
+    });
+    expect(request).toHaveBeenNthCalledWith(3, {
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+          to: "0x3333333333333333333333333333333333333333",
+          data:
+            "0x095ea7b3000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000047c3950",
+          value: "0x0"
+        }
+      ]
+    });
+    expect(request).toHaveBeenNthCalledWith(4, {
       method: "eth_sendTransaction",
       params: [
         {

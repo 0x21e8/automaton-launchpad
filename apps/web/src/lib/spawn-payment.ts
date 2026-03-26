@@ -10,6 +10,7 @@ import {
   encodeEscrowDepositData,
   parseDecimalAmount,
   resolveSpawnChainId,
+  resolveSpawnChainMetadata,
   resolveSpawnUsdcContractAddress
 } from "./wallet-transaction-helpers";
 
@@ -29,6 +30,65 @@ export interface SpawnPaymentAvailability {
 export interface SpawnPaymentExecutionResult {
   approvalTxHash: string;
   paymentTxHash: string;
+}
+
+const UNKNOWN_CHAIN_ERROR_CODE = 4902;
+
+function toHexChainId(chainId: number): string {
+  return `0x${chainId.toString(16)}`;
+}
+
+async function ensureWalletChain(
+  chain: SpawnSession["chain"],
+  transport: WalletTransport,
+  env: Record<string, string | undefined>
+) {
+  const chainMetadata = resolveSpawnChainMetadata(chain, env);
+
+  if (chainMetadata === null) {
+    return;
+  }
+
+  if (chainMetadata.rpcUrl !== null) {
+    await transport.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: toHexChainId(chainMetadata.chainId),
+          chainName: chainMetadata.chainName,
+          rpcUrls: [chainMetadata.rpcUrl],
+          nativeCurrency: {
+            name: chainMetadata.currencyName,
+            symbol: chainMetadata.currencySymbol,
+            decimals: 18
+          },
+          blockExplorerUrls:
+            chainMetadata.blockExplorerUrl === null ? [] : [chainMetadata.blockExplorerUrl]
+        }
+      ]
+    });
+  }
+
+  try {
+    await transport.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: toHexChainId(chainMetadata.chainId) }]
+    });
+  } catch (error) {
+    const isUnknownChain =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === UNKNOWN_CHAIN_ERROR_CODE;
+
+    if (!isUnknownChain || chainMetadata.rpcUrl !== null) {
+      throw error;
+    }
+
+    throw new Error(
+      `Wallet is missing chain ${chainMetadata.chainId} and no RPC URL is configured to add it.`
+    );
+  }
 }
 
 function createAvailability(
@@ -129,6 +189,8 @@ export async function executeSpawnPayment(
   transport: WalletTransport,
   env: Record<string, string | undefined> = import.meta.env
 ): Promise<SpawnPaymentExecutionResult> {
+  await ensureWalletChain(payment.chain, transport, env);
+
   switch (payment.asset) {
     case "usdc": {
       const tokenAddress = resolveSpawnUsdcContractAddress(payment.chain, env);
