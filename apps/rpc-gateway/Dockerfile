@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ COPY apps/rpc-gateway apps/rpc-gateway
 RUN npm run build --workspace @ic-automaton/rpc-gateway \
   && npm prune --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 WORKDIR /app
 

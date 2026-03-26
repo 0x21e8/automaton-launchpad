@@ -13,6 +13,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -25,7 +28,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install npm dependencies
@@ -47,9 +50,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          base_dir="${XDG_CONFIG_HOME:-$HOME}"
+          foundry_dir="${FOUNDRY_DIR:-"$base_dir/.foundry"}"
+          foundry_bin_dir="$foundry_dir/bin"
           curl -L https://foundry.paradigm.xyz | bash
-          "$HOME/.foundry/bin/foundryup"
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+          "$foundry_bin_dir/foundryup"
+          echo "$foundry_bin_dir" >> "$GITHUB_PATH"
 
       - name: Lint
         run: npm run lint
@@ -76,4 +82,3 @@ jobs:
 
       - name: Build rpc-gateway image
         run: docker build -f apps/rpc-gateway/Dockerfile -t automaton-playground-rpc-gateway:ci .
-

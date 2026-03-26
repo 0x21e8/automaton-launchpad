@@ -2,10 +2,10 @@
   "name": "ic-automaton-launchpad",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10.9.0",
+  "packageManager": "npm@11.11.0",
   "engines": {
-    "node": ">=20.19.0",
-    "npm": ">=10"
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
   },
   "workspaces": [
     "apps/*",
@@ -34,7 +34,7 @@
     "test:factory": "cargo test -p factory"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^24.7.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

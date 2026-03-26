@@ -45,14 +45,13 @@ pub use types::{
     CreateSpawnSessionRequest, CreateSpawnSessionResponse, CreationCostQuote, EscrowClaim,
     FactoryArtifactSnapshot, FactoryConfigSnapshot, FactoryError, FactoryHealthSnapshot,
     FactoryInitArgs, FactoryOperationalConfig, FactoryRuntimeSnapshot,
-    FactorySchedulerHealthSnapshot,
-    FactorySchedulerJobCounts, FactorySessionHealthCounts, FeeConfig, PaymentStatus,
-    ProviderConfig, RefundSpawnResponse, ReleaseBroadcastConfig, ReleaseBroadcastFailure,
-    ReleaseBroadcastRecord, ReleaseBroadcastStage, ReleaseSignatureRecord,
+    FactorySchedulerHealthSnapshot, FactorySchedulerJobCounts, FactorySessionHealthCounts,
+    FeeConfig, PaymentStatus, ProviderConfig, RefundSpawnResponse, ReleaseBroadcastConfig,
+    ReleaseBroadcastFailure, ReleaseBroadcastRecord, ReleaseBroadcastStage, ReleaseSignatureRecord,
     SchedulerFailureAction, SchedulerFailureSource, SchedulerJob, SchedulerJobFailure,
-    SchedulerJobKind, SchedulerJobStatus, SchedulerRuntime, SessionAdminView,
-    SessionAuditActor, SessionAuditEntry, SpawnAsset, SpawnChain, SpawnConfig,
-    SpawnExecutionReceipt, SpawnPaymentInstructions, SpawnQuote, SpawnSession, SpawnSessionState,
+    SchedulerJobKind, SchedulerJobStatus, SchedulerRuntime, SessionAdminView, SessionAuditActor,
+    SessionAuditEntry, SpawnAsset, SpawnChain, SpawnConfig, SpawnExecutionReceipt,
+    SpawnPaymentInstructions, SpawnQuote, SpawnSession, SpawnSessionState,
     SpawnSessionStatusResponse, SpawnedAutomatonRecord, SpawnedAutomatonRegistryPage,
 };
 
@@ -76,14 +75,12 @@ fn auto_run_spawn_scheduler(now_ms: u64) -> Vec<Result<SpawnExecutionReceipt, Fa
 
             Some(match report.spawn_receipt {
                 Some(receipt) => Ok(receipt),
-                None => {
-                    Err(report
-                        .error
-                        .unwrap_or_else(|| FactoryError::SessionNotReadyForSpawn {
-                            session_id: report.job_id,
-                            state: SpawnSessionState::Failed,
-                        }))
-                }
+                None => Err(report
+                    .error
+                    .unwrap_or(FactoryError::SessionNotReadyForSpawn {
+                        session_id: report.job_id,
+                        state: SpawnSessionState::Failed,
+                    })),
             })
         })
         .collect()
@@ -310,15 +307,15 @@ mod tests {
         get_factory_runtime, get_session_admin, get_spawn_session, get_spawned_automaton,
         insert_spawned_automaton_record, list_spawned_automatons, mark_session_failed,
         next_payment_scan_plan, reconcile_escrow_payments, restore_state, retry_session_admin,
-        retry_spawn_session, set_creation_cost_quote, set_fee_config, set_mock_canister_balance,
-        set_child_runtime_config, set_operational_config, set_pause,
-        set_release_broadcast_config, snapshot_state, update_artifact, write_state,
-        AutomatonChildRuntimeConfig, CreateSpawnSessionRequest, CreationCostQuote, FactoryError,
-        FactoryInitArgs, FactoryOperationalConfig, FactoryStateSnapshot, FeeConfig,
-        PaymentStatus, ProviderConfig, ReleaseBroadcastConfig, SchedulerFailureAction,
-        SchedulerFailureSource, SchedulerJob, SchedulerJobFailure, SchedulerJobKind,
-        SchedulerJobStatus, SchedulerRuntime, SessionAuditActor, SpawnAsset, SpawnChain,
-        SpawnConfig, SpawnSessionState, SpawnedAutomatonRecord,
+        retry_spawn_session, set_child_runtime_config, set_creation_cost_quote, set_fee_config,
+        set_mock_canister_balance, set_operational_config, set_pause, set_release_broadcast_config,
+        snapshot_state, update_artifact, write_state, AutomatonChildRuntimeConfig,
+        CreateSpawnSessionRequest, CreationCostQuote, FactoryError, FactoryInitArgs,
+        FactoryOperationalConfig, FactoryStateSnapshot, FeeConfig, PaymentStatus, ProviderConfig,
+        ReleaseBroadcastConfig, SchedulerFailureAction, SchedulerFailureSource, SchedulerJob,
+        SchedulerJobFailure, SchedulerJobKind, SchedulerJobStatus, SchedulerRuntime,
+        SessionAuditActor, SpawnAsset, SpawnChain, SpawnConfig, SpawnSessionState,
+        SpawnedAutomatonRecord,
     };
     use crate::base_rpc::BaseDepositLog;
     use crate::scheduler::{
@@ -442,7 +439,7 @@ mod tests {
             Some("caller-principal".to_string()),
         );
 
-        let snapshot: FactoryStateSnapshot = state.into();
+        let snapshot: FactoryStateSnapshot = state;
         assert!(snapshot.admin_principals.contains("aaaaa-aa"));
         assert_eq!(snapshot.fee_config.usdc_fee, "7000000");
         assert_eq!(snapshot.creation_cost_quote.usdc_cost, "43000000");
@@ -731,8 +728,13 @@ mod tests {
     fn rejects_chunked_artifact_upload_that_exceeds_declared_size() {
         reset_factory_state();
 
-        begin_artifact_upload("admin", format!("{:x}", Sha256::digest(TEST_WASM)), SHA40.into(), 3)
-            .expect("upload should begin");
+        begin_artifact_upload(
+            "admin",
+            format!("{:x}", Sha256::digest(TEST_WASM)),
+            SHA40.into(),
+            3,
+        )
+        .expect("upload should begin");
 
         let error = append_artifact_chunk("admin", TEST_WASM[..4].to_vec())
             .expect_err("oversized chunk should be rejected");
@@ -1311,14 +1313,12 @@ mod tests {
         ));
         assert_eq!(session.session.state, SpawnSessionState::Failed);
         assert!(session.session.retryable);
-        assert!(
-            session
-                .audit
-                .last()
-                .expect("failure audit should exist")
-                .reason
-                .contains("missing child runtime config: child_runtime.ecdsa_key_name")
-        );
+        assert!(session
+            .audit
+            .last()
+            .expect("failure audit should exist")
+            .reason
+            .contains("missing child runtime config: child_runtime.ecdsa_key_name"));
         assert!(session.session.automaton_canister_id.is_none());
         assert!(snapshot_state().runtimes.is_empty());
     }

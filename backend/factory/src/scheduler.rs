@@ -26,7 +26,7 @@ pub struct SchedulerRunReport {
 
 #[derive(Clone, Debug)]
 struct JobExecutionFailure {
-    error: Option<FactoryError>,
+    error: Option<Box<FactoryError>>,
     failure: SchedulerJobFailure,
 }
 
@@ -249,7 +249,7 @@ fn lease_due_jobs(now_ms: u64, limit: usize) -> Vec<SchedulerJob> {
             .filter(|job| job_is_due(job, now_ms))
             .map(|job| (job.next_run_at_ms.unwrap_or(u64::MAX), job.job_id.clone()))
             .collect::<Vec<_>>();
-        due_jobs.sort_by(|left, right| left.cmp(right));
+        due_jobs.sort();
         due_jobs.truncate(limit);
 
         let mut leased = Vec::with_capacity(due_jobs.len());
@@ -476,7 +476,7 @@ fn execute_job_sync(
                 .map(|_| None)
                 .map_err(|error| JobExecutionFailure {
                     failure: classify_payment_poll_error(&error, now_ms),
-                    error: Some(error),
+                    error: Some(Box::new(error)),
                 })
         }
         SchedulerJobKind::SpawnExecution { session_id } => {
@@ -484,7 +484,7 @@ fn execute_job_sync(
                 .map(Some)
                 .map_err(|error| JobExecutionFailure {
                     failure: classify_spawn_error(&error, now_ms),
-                    error: Some(error),
+                    error: Some(Box::new(error)),
                 })
         }
     }
@@ -524,7 +524,7 @@ pub(crate) fn run_scheduler_tick(now_ms: u64) -> Vec<SchedulerRunReport> {
                         job_id: job.job_id.clone(),
                         kind: job.kind.clone(),
                         spawn_receipt: None,
-                        error: error.error,
+                        error: error.error.map(|error| *error),
                     });
                 }
             }
@@ -557,7 +557,7 @@ async fn execute_job_async(
                 .map(|_| None)
                 .map_err(|error| JobExecutionFailure {
                     failure: classify_payment_poll_error(&error, now_ms),
-                    error: Some(error),
+                    error: Some(Box::new(error)),
                 })
         }
         SchedulerJobKind::SpawnExecution { session_id } => {
@@ -566,7 +566,7 @@ async fn execute_job_async(
                 .map(Some)
                 .map_err(|error| JobExecutionFailure {
                     failure: classify_spawn_error(&error, now_ms),
-                    error: Some(error),
+                    error: Some(Box::new(error)),
                 })
         }
     }

@@ -68,7 +68,7 @@ These decisions close the main gaps in the design doc. Treat them as the impleme
 
 The repo can prepare for these, but a coding agent cannot fully satisfy them from code alone:
 
-- a VPS with Docker Compose, Caddy, `systemd`, Node 22, Foundry, and `icp`
+- a VPS with Docker Compose, Caddy, `systemd`, Node 24.x, npm 11.x, Foundry, and `icp`
 - DNS + TLS for `playground.<domain>` and `rpc.playground.<domain>`
 - a Base upstream RPC secret
 - a child Wasm artifact path plus commit SHA from the `ic-automaton` release pipeline

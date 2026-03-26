@@ -285,9 +285,10 @@ mod tests {
     }
 
     fn state_with_session(session: SpawnSession) -> FactoryState {
-        let mut state = FactoryState::default();
-        state.sessions = BTreeMap::from([(session.session_id.clone(), session)]);
-        state
+        FactoryState {
+            sessions: BTreeMap::from([(session.session_id.clone(), session)]),
+            ..FactoryState::default()
+        }
     }
 
     #[test]

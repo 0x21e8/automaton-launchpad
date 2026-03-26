@@ -4,10 +4,10 @@ use crate::controllers::complete_controller_handoff_live;
 #[cfg(target_arch = "wasm32")]
 use crate::controllers::rejection_message;
 use crate::cycles::ensure_spawn_creation_cycles;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::evm::derive_child_evm_address_for_key_name;
 #[cfg(target_arch = "wasm32")]
 use crate::evm::derive_child_evm_address;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::evm::derive_child_evm_address_for_key_name;
 use crate::expiry::expire_spawn_session;
 #[cfg(target_arch = "wasm32")]
 use crate::init::build_automaton_install_args;
@@ -17,9 +17,9 @@ use crate::session_transitions::{apply_session_event_in_state, SpawnSessionEvent
 use crate::state::{clear_provider_secrets, read_state, write_state, FactoryState};
 use crate::types::{
     amount_to_string, parse_amount, AutomatonBootstrapEvidence, AutomatonBootstrapVerification,
-    AutomatonRuntimeState, CONTROLLER_FIELD, FactoryError, PaymentStatus, ReleaseBroadcastRecord,
-    SessionAuditActor, SpawnExecutionReceipt, SpawnSession, SpawnSessionState,
-    SpawnedAutomatonRecord,
+    AutomatonRuntimeState, FactoryError, PaymentStatus, ReleaseBroadcastRecord, SessionAuditActor,
+    SpawnExecutionReceipt, SpawnSession, SpawnSessionState, SpawnedAutomatonRecord,
+    CONTROLLER_FIELD,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -103,7 +103,10 @@ fn build_bootstrap_verification(
                 .unwrap_or("<missing>")
         ));
     }
-    if !same_evm_address(&session.steward_address, evidence.steward_address.as_deref()) {
+    if !same_evm_address(
+        &session.steward_address,
+        evidence.steward_address.as_deref(),
+    ) {
         failures.push(format!(
             "steward_address mismatch: expected={}, observed={}",
             session.steward_address,
@@ -233,12 +236,13 @@ async fn load_spawned_automaton_bootstrap_evidence(
                 message: rejection_message(error),
             })?;
     if evm_address.is_none() {
-        let (derived_address,): (String,) = ic_cdk::call(principal, "derive_automaton_evm_address", ())
-            .await
-            .map_err(|error| FactoryError::ManagementCallFailed {
-                method: "derive_automaton_evm_address".to_string(),
-                message: rejection_message(error),
-            })?;
+        let (derived_address,): (String,) =
+            ic_cdk::call(principal, "derive_automaton_evm_address", ())
+                .await
+                .map_err(|error| FactoryError::ManagementCallFailed {
+                    method: "derive_automaton_evm_address".to_string(),
+                    message: rejection_message(error),
+                })?;
         evm_address = Some(derived_address);
     }
 
@@ -450,7 +454,9 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
         let evm_address = session_snapshot
             .automaton_evm_address
             .clone()
-            .unwrap_or_else(|| derive_child_evm_address_for_key_name(&child_runtime.ecdsa_key_name));
+            .unwrap_or_else(|| {
+                derive_child_evm_address_for_key_name(&child_runtime.ecdsa_key_name)
+            });
         let mut runtime = initialize_automaton(&session_snapshot, canister_id, evm_address, now_ms);
         runtime.evm_address_derived_at = Some(now_ms);
 
@@ -562,7 +568,7 @@ pub fn execute_spawn(session_id: &str, now_ms: u64) -> Result<SpawnExecutionRece
                     now_ms,
                     "release broadcast failed",
                 )?;
-                return Err(error.source);
+                return Err(*error.source);
             }
         };
         let crate::evm::ReleaseBroadcastReceipt {
@@ -850,26 +856,24 @@ pub async fn execute_spawn(
 
         let created_canister_id = record.canister_id.to_text();
         canister_id = Some(created_canister_id.clone());
-        let expected_evm_address = match derive_child_evm_address(
-            &created_canister_id,
-            &child_runtime.ecdsa_key_name,
-        )
-        .await
-        {
-            Ok(address) => address,
-            Err(error) => {
-                cleanup_orphaned_canister(&created_canister_id).await;
-                return fail_spawn_session(
-                    session_id,
-                    current_time_ms(),
-                    "derive_automaton_evm_address failed",
-                    Some(&created_canister_id),
-                    None,
-                    error,
-                )
-                .await;
-            }
-        };
+        let expected_evm_address =
+            match derive_child_evm_address(&created_canister_id, &child_runtime.ecdsa_key_name)
+                .await
+            {
+                Ok(address) => address,
+                Err(error) => {
+                    cleanup_orphaned_canister(&created_canister_id).await;
+                    return fail_spawn_session(
+                        session_id,
+                        current_time_ms(),
+                        "derive_automaton_evm_address failed",
+                        Some(&created_canister_id),
+                        None,
+                        error,
+                    )
+                    .await;
+                }
+            };
         runtime = Some(initialize_automaton(
             &session_snapshot,
             created_canister_id.clone(),
@@ -1016,25 +1020,21 @@ pub async fn execute_spawn(
     }
 
     let canister_id = canister_id.expect("spawn path should have a canister id");
-    let expected_evm_address = match derive_child_evm_address(
-        &canister_id,
-        &child_runtime.ecdsa_key_name,
-    )
-    .await
-    {
-        Ok(address) => address,
-        Err(error) => {
-            return fail_spawn_session(
-                session_id,
-                current_time_ms(),
-                "derive_automaton_evm_address failed",
-                Some(&canister_id),
-                runtime.as_ref(),
-                error,
-            )
-            .await;
-        }
-    };
+    let expected_evm_address =
+        match derive_child_evm_address(&canister_id, &child_runtime.ecdsa_key_name).await {
+            Ok(address) => address,
+            Err(error) => {
+                return fail_spawn_session(
+                    session_id,
+                    current_time_ms(),
+                    "derive_automaton_evm_address failed",
+                    Some(&canister_id),
+                    runtime.as_ref(),
+                    error,
+                )
+                .await;
+            }
+        };
     let mut runtime = runtime.unwrap_or_else(|| {
         initialize_automaton(
             &session_snapshot,
@@ -1149,7 +1149,7 @@ pub async fn execute_spawn(
                 "release broadcast failed",
                 None,
                 Some(&runtime),
-                error.source,
+                *error.source,
             )
             .await;
         }

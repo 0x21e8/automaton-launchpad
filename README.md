@@ -108,7 +108,7 @@ automaton-launchpad/
 
 ## Prerequisites
 
-- **Node.js** `>=20.19.0` and **npm** `>=10`
+- **Node.js** `24.x` and **npm** `11.x`
 - **Rust** toolchain (for building and testing `backend/factory`)
 - **Foundry** (`forge`, `cast`, `anvil`) for the local EVM escrow loop
 - **icp-cli** for canister deployment (`icp build`, `icp canister install`)

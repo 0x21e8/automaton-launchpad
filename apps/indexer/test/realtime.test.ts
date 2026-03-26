@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RealtimeEvent } from "@ic-automaton/shared";
 
+import type { IndexerConfig } from "../src/config.js";
 import { buildServer } from "../src/server.js";
 import type {
   AutomatonClient,
@@ -43,6 +44,53 @@ async function createDatabasePath() {
   const directory = await mkdtemp(join(tmpdir(), "indexer-realtime-"));
   tempPaths.push(directory);
   return join(directory, "indexer.sqlite");
+}
+
+function createPlaygroundConfig(): IndexerConfig["playground"] {
+  return {
+    metadata: {
+      environmentLabel: "Local development",
+      environmentVersion: null,
+      maintenance: false,
+      chain: {
+        id: 8453,
+        name: "Base Local Fork",
+        publicRpcUrl: "http://127.0.0.1:8545",
+        nativeCurrency: {
+          name: "Ether",
+          symbol: "ETH",
+          decimals: 18
+        },
+        explorerUrl: null
+      },
+      faucet: {
+        available: false,
+        claimLimits: {
+          windowSeconds: 86_400,
+          maxClaimsPerWallet: 1,
+          maxClaimsPerIp: 1
+        },
+        claimAssetAmounts: [
+          {
+            asset: "eth",
+            amount: "1",
+            decimals: 18
+          },
+          {
+            asset: "usdc",
+            amount: "250",
+            decimals: 6
+          }
+        ]
+      },
+      reset: {
+        lastResetAt: null,
+        nextResetAt: null,
+        cadenceLabel: "Manual local resets"
+      }
+    },
+    statusFilePath: "/tmp/indexer-playground-status.json"
+  };
 }
 
 function createIdentityConfigRead(canisterId: string): IdentityConfigRead {
@@ -259,7 +307,8 @@ describe("realtime hub", () => {
         icHost: "http://localhost:8000",
         fastPollIntervalMs: 15_000,
         slowPollIntervalMs: 300_000,
-        pricePollIntervalMs: 60_000
+        pricePollIntervalMs: 60_000,
+        playground: createPlaygroundConfig()
       }
     });
     const app = buildServer({

@@ -20,7 +20,7 @@ Install these on the VPS:
 - `docker` and the Docker Compose plugin
 - `caddy`
 - `git`
-- Node.js 22 and `npm`
+- Node.js 24.x and npm 11.x
 - Rust/Cargo
 - `forge`, `cast`, and `anvil`
 - `icp`

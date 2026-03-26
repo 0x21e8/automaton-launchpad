@@ -18,7 +18,7 @@ pub struct ReleaseBroadcastReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ReleaseBroadcastError {
     pub(crate) record: ReleaseBroadcastRecord,
-    pub(crate) source: FactoryError,
+    pub(crate) source: Box<FactoryError>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -389,7 +389,7 @@ fn release_broadcast_error(
 
     ReleaseBroadcastError {
         record,
-        source: error,
+        source: Box::new(error),
     }
 }
 
@@ -654,6 +654,7 @@ pub(crate) async fn broadcast_release_transaction(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::result_large_err)]
 pub(crate) fn broadcast_release_transaction(
     claim_id: &str,
     recipient: &str,
@@ -879,7 +880,7 @@ mod tests {
             Some(&ReleaseBroadcastStage::Signing)
         );
         assert!(matches!(
-            error.source,
+            *error.source,
             FactoryError::InsufficientCyclesForOperation { ref operation, .. }
                 if operation == "sign_with_ecdsa"
         ));

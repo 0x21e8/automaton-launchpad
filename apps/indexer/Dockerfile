@@ -2,7 +2,7 @@ FROM ghcr.io/foundry-rs/foundry:stable AS foundry
 
 RUN cp "$(command -v cast)" /tmp/cast
 
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN npm run build --workspace @ic-automaton/shared \
   && npm run build --workspace @ic-automaton/indexer \
   && npm prune --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 WORKDIR /app
 

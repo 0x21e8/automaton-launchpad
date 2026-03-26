@@ -1,7 +1,10 @@
+#[cfg(target_arch = "wasm32")]
 use crate::types::FactoryError;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn rejection_message((code, message): (ic_cdk::api::call::RejectionCode, String)) -> String {
+pub(crate) fn rejection_message(
+    (code, message): (ic_cdk::api::call::RejectionCode, String),
+) -> String {
     format!("{code:?}: {message}")
 }
 

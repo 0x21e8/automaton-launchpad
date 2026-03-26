@@ -225,6 +225,7 @@ impl From<&FactoryState> for FactoryStableConfig {
 }
 
 impl FactoryStableConfig {
+    #[allow(clippy::too_many_arguments)]
     fn into_state(
         self,
         sessions: BTreeMap<String, SpawnSession>,
