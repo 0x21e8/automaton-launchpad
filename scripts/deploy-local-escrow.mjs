@@ -15,6 +15,16 @@ const canonicalBaseUsdcAddress =
 const outputPath =
   process.env.LOCAL_EVM_DEPLOYMENT_FILE ??
   path.join(rootDir, "tmp", "local-escrow-deployment.json");
+const expectedChainId = normalizeOptionalInteger(process.env.LOCAL_EVM_EXPECT_CHAIN_ID);
+
+function normalizeOptionalInteger(value) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return null;
+  }
+
+  const parsed = Number.parseInt(String(value).trim(), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 execFileSync("forge", ["build", "--root", evmRoot], {
   cwd: rootDir,
@@ -123,6 +133,12 @@ const constructorEncoding = abiEncode("constructor(address,address)", [usdcAddre
 const escrowAddress = await deploy(escrowBytecode, constructorEncoding);
 
 const chainId = Number.parseInt(await rpc("eth_chainId", []), 16);
+
+if (expectedChainId !== null && chainId !== expectedChainId) {
+  throw new Error(
+    `unexpected chain id ${chainId}; expected ${expectedChainId}.`
+  );
+}
 
 const deployment = {
   rpcUrl,

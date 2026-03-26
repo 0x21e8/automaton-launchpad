@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +27,14 @@ afterEach(async () => {
   );
 });
 
-async function createDatabasePath() {
-  const directory = await mkdtemp(join(tmpdir(), "indexer-server-"));
+async function createTempDirectory(prefix: string) {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
   tempPaths.push(directory);
+  return directory;
+}
+
+async function createDatabasePath() {
+  const directory = await createTempDirectory("indexer-server-");
   return join(directory, "indexer.sqlite");
 }
 
@@ -356,6 +361,128 @@ describe("indexer server", () => {
           icHost: "https://ic0.app",
           localReplica: null
         }
+      }
+    });
+
+    await app.close();
+  });
+
+  it("returns config-derived playground metadata when the status file is missing", async () => {
+    const statusDirectory = await createTempDirectory("indexer-playground-status-");
+    const app = buildServer({
+      env: {
+        ...process.env,
+        PLAYGROUND_CHAIN_ID: "20260326",
+        PLAYGROUND_CHAIN_NAME: "Automaton Playground",
+        PLAYGROUND_ENV_LABEL: "Automaton Playground",
+        PLAYGROUND_FAUCET_ENABLED: "1",
+        PLAYGROUND_PUBLIC_RPC_URL: "https://rpc.playground.example.com",
+        PLAYGROUND_STATUS_FILE: join(statusDirectory, "missing.json")
+      },
+      config: {
+        databasePath: await createDatabasePath()
+      }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/playground"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      environmentLabel: "Automaton Playground",
+      environmentVersion: null,
+      maintenance: false,
+      chain: {
+        id: 20_260_326,
+        name: "Automaton Playground",
+        publicRpcUrl: "https://rpc.playground.example.com",
+        nativeCurrency: {
+          name: "Ether",
+          symbol: "ETH",
+          decimals: 18
+        },
+        explorerUrl: null
+      },
+      faucet: {
+        available: true,
+        claimLimits: {
+          windowSeconds: 86_400,
+          maxClaimsPerWallet: 1,
+          maxClaimsPerIp: 1
+        },
+        claimAssetAmounts: [
+          {
+            asset: "eth",
+            amount: "1",
+            decimals: 18
+          },
+          {
+            asset: "usdc",
+            amount: "250",
+            decimals: 6
+          }
+        ]
+      },
+      reset: {
+        lastResetAt: null,
+        nextResetAt: null,
+        cadenceLabel: "Manual local resets"
+      }
+    });
+
+    await app.close();
+  });
+
+  it("overlays the runtime playground status file onto config metadata", async () => {
+    const statusDirectory = await createTempDirectory("indexer-playground-status-");
+    const statusFilePath = join(statusDirectory, "playground-status.json");
+    await writeFile(
+      statusFilePath,
+      JSON.stringify({
+        environmentVersion: "runtime-2026.03.26+sha.abcdef",
+        maintenance: true,
+        message: "scheduled reset incoming",
+        lastResetAt: "2026-03-26T09:00:00Z",
+        nextResetAt: "2026-03-27T09:00:00Z",
+        updatedAt: "2026-03-26T09:05:00Z"
+      })
+    );
+    const app = buildServer({
+      env: {
+        ...process.env,
+        PLAYGROUND_CHAIN_ID: "20260326",
+        PLAYGROUND_CHAIN_NAME: "Automaton Playground",
+        PLAYGROUND_ENV_LABEL: "Automaton Playground",
+        PLAYGROUND_ENV_VERSION: "build-2026.03.26+sha.123456",
+        PLAYGROUND_PUBLIC_RPC_URL: "https://rpc.playground.example.com",
+        PLAYGROUND_STATUS_FILE: statusFilePath
+      },
+      config: {
+        databasePath: await createDatabasePath()
+      }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/playground"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      environmentLabel: "Automaton Playground",
+      environmentVersion: "runtime-2026.03.26+sha.abcdef",
+      maintenance: true,
+      chain: {
+        id: 20_260_326,
+        name: "Automaton Playground",
+        publicRpcUrl: "https://rpc.playground.example.com"
+      },
+      reset: {
+        lastResetAt: Date.parse("2026-03-26T09:00:00Z"),
+        nextResetAt: Date.parse("2026-03-27T09:00:00Z"),
+        cadenceLabel: "Manual local resets"
       }
     });
 
@@ -886,6 +1013,147 @@ describe("indexer server", () => {
     await expect(eventMessage).resolves.toContain(sessionDetail.session.sessionId);
 
     socket.close();
+    await app.close();
+  });
+
+  it("funds a faucet request and rejects repeated claims for the same wallet", async () => {
+    const app = buildServer({
+      env: {
+        ...process.env,
+        PLAYGROUND_FAUCET_ENABLED: "1",
+        PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS: "3600",
+        PLAYGROUND_FAUCET_ETH_AMOUNT: "0.25",
+        PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP: "5",
+        PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET: "1",
+        PLAYGROUND_FAUCET_USDC_AMOUNT: "75"
+      },
+      config: {
+        databasePath: await createDatabasePath()
+      },
+      faucetSeedRunner: async ({ walletAddress }) => {
+        return {
+          walletAddress,
+          mintTxHash: "0xmint",
+          fundTxHash: "0xfund",
+          balances: {
+            ethWei: "250000000000000000",
+            usdcRaw: "75000000"
+          }
+        };
+      }
+    });
+
+    const successResponse = await app.inject({
+      method: "POST",
+      url: "/api/playground/faucet",
+      payload: {
+        walletAddress: "0x00000000000000000000000000000000000000AA"
+      }
+    });
+    const limitedResponse = await app.inject({
+      method: "POST",
+      url: "/api/playground/faucet",
+      payload: {
+        walletAddress: "0x00000000000000000000000000000000000000aa"
+      }
+    });
+
+    expect(successResponse.statusCode).toBe(200);
+    expect(successResponse.json()).toEqual({
+      ok: true,
+      walletAddress: "0x00000000000000000000000000000000000000aa",
+      txHashes: {
+        eth: "0xfund",
+        usdc: "0xmint"
+      },
+      fundedAmounts: {
+        eth: {
+          amount: "0.25",
+          decimals: 18,
+          wei: "250000000000000000"
+        },
+        usdc: {
+          amount: "75",
+          decimals: 6,
+          raw: "75000000"
+        }
+      },
+      balances: {
+        ethWei: "250000000000000000",
+        usdcRaw: "75000000"
+      }
+    });
+
+    expect(limitedResponse.statusCode).toBe(429);
+    expect(limitedResponse.headers["retry-after"]).toBeDefined();
+    expect(limitedResponse.json()).toMatchObject({
+      ok: false,
+      error: "Faucet wallet claim limit exceeded.",
+      walletAddress: "0x00000000000000000000000000000000000000aa",
+      windowSeconds: 3600
+    });
+
+    await expect(
+      app.indexerStore.getFaucetClaimWindowStats({
+        walletAddress: "0x00000000000000000000000000000000000000aa",
+        since: 0
+      })
+    ).resolves.toEqual({
+      count: 1,
+      oldestClaimAt: expect.any(Number)
+    });
+
+    await app.close();
+  });
+
+  it("rejects faucet claims when the caller IP exceeds the configured window", async () => {
+    const app = buildServer({
+      env: {
+        ...process.env,
+        PLAYGROUND_FAUCET_ENABLED: "1",
+        PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS: "3600",
+        PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP: "1",
+        PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET: "2"
+      },
+      config: {
+        databasePath: await createDatabasePath()
+      },
+      faucetSeedRunner: async ({ walletAddress }) => {
+        return {
+          walletAddress,
+          mintTxHash: "0xmint",
+          fundTxHash: "0xfund",
+          balances: {
+            ethWei: "1000000000000000000",
+            usdcRaw: "250000000"
+          }
+        };
+      }
+    });
+
+    const firstResponse = await app.inject({
+      method: "POST",
+      url: "/api/playground/faucet",
+      payload: {
+        walletAddress: "0x00000000000000000000000000000000000000aa"
+      }
+    });
+    const secondResponse = await app.inject({
+      method: "POST",
+      url: "/api/playground/faucet",
+      payload: {
+        walletAddress: "0x00000000000000000000000000000000000000bb"
+      }
+    });
+
+    expect(firstResponse.statusCode).toBe(200);
+    expect(secondResponse.statusCode).toBe(429);
+    expect(secondResponse.json()).toMatchObject({
+      ok: false,
+      error: "Faucet IP claim limit exceeded.",
+      windowSeconds: 3600
+    });
+
     await app.close();
   });
 });

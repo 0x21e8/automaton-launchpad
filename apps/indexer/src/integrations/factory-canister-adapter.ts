@@ -162,7 +162,6 @@ interface CandidFactoryArtifactSnapshot {
 }
 
 interface CandidFactorySessionHealthCounts {
-  active_total: bigint;
   awaiting_payment: bigint;
   broadcasting_release: bigint;
   payment_detected: bigint;
@@ -347,7 +346,6 @@ function createFactoryIdl() {
       wasm_size_bytes: candid.Opt(candid.Nat64)
     });
     const FactorySessionHealthCounts = candid.Record({
-      active_total: candid.Nat64,
       awaiting_payment: candid.Nat64,
       payment_detected: candid.Nat64,
       spawning: candid.Nat64,
@@ -712,14 +710,25 @@ function mapRegistryPage(
 }
 
 function mapFactoryHealth(snapshot: CandidFactoryHealthSnapshot): FactoryHealthSnapshot {
+  const awaitingPayment = toNumber(snapshot.active_sessions.awaiting_payment);
+  const broadcastingRelease = toNumber(snapshot.active_sessions.broadcasting_release);
+  const paymentDetected = toNumber(snapshot.active_sessions.payment_detected);
+  const retryableFailed = toNumber(snapshot.active_sessions.retryable_failed);
+  const spawning = toNumber(snapshot.active_sessions.spawning);
+
   return {
     activeSessions: {
-      activeTotal: toNumber(snapshot.active_sessions.active_total),
-      awaitingPayment: toNumber(snapshot.active_sessions.awaiting_payment),
-      broadcastingRelease: toNumber(snapshot.active_sessions.broadcasting_release),
-      paymentDetected: toNumber(snapshot.active_sessions.payment_detected),
-      retryableFailed: toNumber(snapshot.active_sessions.retryable_failed),
-      spawning: toNumber(snapshot.active_sessions.spawning)
+      activeTotal:
+        awaitingPayment +
+        broadcastingRelease +
+        paymentDetected +
+        retryableFailed +
+        spawning,
+      awaitingPayment,
+      broadcastingRelease,
+      paymentDetected,
+      retryableFailed,
+      spawning
     },
     artifact: {
       loaded: snapshot.artifact.loaded,

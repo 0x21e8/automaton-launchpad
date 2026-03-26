@@ -100,6 +100,17 @@ async function getBalance(address) {
   return BigInt(balance);
 }
 
+async function getTokenBalance(tokenAddress, address) {
+  const balance = await rpc("eth_call", [
+    {
+      to: tokenAddress,
+      data: calldata("balanceOf(address)", [address])
+    },
+    "latest"
+  ]);
+  return BigInt(balance);
+}
+
 async function waitForReceipt(txHash) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const receipt = await rpc("eth_getTransactionReceipt", [txHash]);
@@ -155,12 +166,18 @@ if (fundFactorySigner) {
   };
 }
 
+const walletBalances = {
+  ethWei: (await getBalance(walletAddress)).toString(),
+  usdcRaw: (await getTokenBalance(usdcTokenAddress, walletAddress)).toString()
+};
+
 const summary = {
   walletAddress,
   usdcAmount,
   ethAmount,
   mintTxHash,
   fundTxHash,
+  balances: walletBalances,
   factorySigner: factorySignerSummary,
   icpHome: detectedIcpHome ?? null,
   network: {

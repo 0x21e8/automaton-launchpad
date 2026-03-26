@@ -14,6 +14,10 @@ import {
   type RealtimeEvent
 } from "../src/events.ts";
 import {
+  PLAYGROUND_FAUCET_ASSETS,
+  type PlaygroundMetadata
+} from "../src/playground.ts";
+import {
   deriveClaimId,
   MINIMUM_GROSS_PAYMENT_USD,
   PAYMENT_STATUSES,
@@ -82,6 +86,54 @@ describe("shared contracts", () => {
       "spawn.session.failed",
       "spawn.session.expired"
     ]);
+  });
+
+  it("defines the playground metadata contract for runtime network discovery", () => {
+    const metadata: PlaygroundMetadata = {
+      environmentLabel: "Automaton Playground",
+      environmentVersion: "2026.03.26+sha.abcdef",
+      maintenance: false,
+      chain: {
+        id: 20_260_326,
+        name: "Automaton Playground",
+        publicRpcUrl: "https://rpc.playground.example.com",
+        nativeCurrency: {
+          name: "Ether",
+          symbol: "ETH",
+          decimals: 18
+        },
+        explorerUrl: null
+      },
+      faucet: {
+        available: true,
+        claimLimits: {
+          windowSeconds: 43_200,
+          maxClaimsPerWallet: 2,
+          maxClaimsPerIp: 5
+        },
+        claimAssetAmounts: [
+          {
+            asset: "eth",
+            amount: "0.25",
+            decimals: 18
+          },
+          {
+            asset: "usdc",
+            amount: "75",
+            decimals: 6
+          }
+        ]
+      },
+      reset: {
+        lastResetAt: 1_711_447_200_000,
+        nextResetAt: 1_711_533_600_000,
+        cadenceLabel: "Daily at 10:00 UTC"
+      }
+    };
+
+    expect(PLAYGROUND_FAUCET_ASSETS).toEqual(["eth", "usdc"]);
+    expect(metadata.chain.id).toBe(20_260_326);
+    expect(metadata.faucet.claimAssetAmounts).toHaveLength(2);
   });
 
   it("keeps the shared API shapes compilable for later milestones", () => {

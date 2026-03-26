@@ -1,4 +1,5 @@
 import type {
+  PlaygroundMetadata,
   SpawnPaymentInstructions,
   SpawnSession
 } from "@ic-automaton/shared";
@@ -33,61 +34,125 @@ export interface SpawnPaymentExecutionResult {
 }
 
 const UNKNOWN_CHAIN_ERROR_CODE = 4902;
+const USER_REJECTED_REQUEST_ERROR_CODE = 4001;
+
+class SpawnPaymentError extends Error {
+  readonly kind:
+    | "chain_add_rejected"
+    | "chain_add_failed"
+    | "chain_switch_rejected"
+    | "insufficient_eth"
+    | "insufficient_usdc"
+    | "quote_expired";
+
+  constructor(kind: SpawnPaymentError["kind"], message: string) {
+    super(message);
+    this.kind = kind;
+  }
+}
 
 function toHexChainId(chainId: number): string {
   return `0x${chainId.toString(16)}`;
 }
 
-async function ensureWalletChain(
+function isProviderErrorWithCode(error: unknown, code: number) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+async function requestWalletChainSwitch(
+  chainId: number,
+  transport: WalletTransport
+) {
+  await transport.request({
+    method: "wallet_switchEthereumChain",
+    params: [{ chainId: toHexChainId(chainId) }]
+  });
+}
+
+export async function connectWalletToSpawnChain(
   chain: SpawnSession["chain"],
   transport: WalletTransport,
+  playgroundMetadata: PlaygroundMetadata | null = null,
   env: Record<string, string | undefined>
 ) {
-  const chainMetadata = resolveSpawnChainMetadata(chain, env);
+  const chainMetadata = resolveSpawnChainMetadata(chain, playgroundMetadata, env);
 
   if (chainMetadata === null) {
     return;
   }
 
-  if (chainMetadata.rpcUrl !== null) {
-    await transport.request({
-      method: "wallet_addEthereumChain",
-      params: [
-        {
-          chainId: toHexChainId(chainMetadata.chainId),
-          chainName: chainMetadata.chainName,
-          rpcUrls: [chainMetadata.rpcUrl],
-          nativeCurrency: {
-            name: chainMetadata.currencyName,
-            symbol: chainMetadata.currencySymbol,
-            decimals: 18
-          },
-          blockExplorerUrls:
-            chainMetadata.blockExplorerUrl === null ? [] : [chainMetadata.blockExplorerUrl]
-        }
-      ]
-    });
-  }
-
   try {
-    await transport.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: toHexChainId(chainMetadata.chainId) }]
-    });
+    await requestWalletChainSwitch(chainMetadata.chainId, transport);
   } catch (error) {
-    const isUnknownChain =
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === UNKNOWN_CHAIN_ERROR_CODE;
+    const isUnknownChain = isProviderErrorWithCode(error, UNKNOWN_CHAIN_ERROR_CODE);
 
-    if (!isUnknownChain || chainMetadata.rpcUrl !== null) {
+    if (!isUnknownChain) {
+      if (isProviderErrorWithCode(error, USER_REJECTED_REQUEST_ERROR_CODE)) {
+        throw new SpawnPaymentError(
+          "chain_switch_rejected",
+          `Wallet rejected switching to ${chainMetadata.chainName}.`
+        );
+      }
+
       throw error;
     }
 
-    throw new Error(
-      `Wallet is missing chain ${chainMetadata.chainId} and no RPC URL is configured to add it.`
-    );
+    if (chainMetadata.rpcUrl === null) {
+      throw new SpawnPaymentError(
+        "chain_add_failed",
+        `Wallet is missing chain ${chainMetadata.chainId} and no RPC URL is configured to add it.`
+      );
+    }
+
+    try {
+      await transport.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: toHexChainId(chainMetadata.chainId),
+            chainName: chainMetadata.chainName,
+            rpcUrls: [chainMetadata.rpcUrl],
+            nativeCurrency: {
+              name: chainMetadata.currencyName,
+              symbol: chainMetadata.currencySymbol,
+              decimals: 18
+            },
+            blockExplorerUrls:
+              chainMetadata.blockExplorerUrl === null ? [] : [chainMetadata.blockExplorerUrl]
+          }
+        ]
+      });
+    } catch (addChainError) {
+      if (isProviderErrorWithCode(addChainError, USER_REJECTED_REQUEST_ERROR_CODE)) {
+        throw new SpawnPaymentError(
+          "chain_add_rejected",
+          `Wallet rejected adding ${chainMetadata.chainName}.`
+        );
+      }
+
+      throw new SpawnPaymentError(
+        "chain_add_failed",
+        `Wallet could not add ${chainMetadata.chainName}.`
+      );
+    }
+
+    try {
+      await requestWalletChainSwitch(chainMetadata.chainId, transport);
+    } catch (switchChainError) {
+      if (isProviderErrorWithCode(switchChainError, USER_REJECTED_REQUEST_ERROR_CODE)) {
+        throw new SpawnPaymentError(
+          "chain_switch_rejected",
+          `Wallet rejected switching to ${chainMetadata.chainName}.`
+        );
+      }
+
+      throw switchChainError;
+    }
   }
 }
 
@@ -107,13 +172,14 @@ export function getSpawnPaymentAvailability(
   session: SpawnSession | null,
   payment: SpawnPaymentInstructions | null,
   wallet: SpawnPaymentWalletState,
+  playgroundMetadata: PlaygroundMetadata | null = null,
   env: Record<string, string | undefined> = import.meta.env
 ): SpawnPaymentAvailability {
   if (session === null || payment === null) {
     return createAvailability(false, "Payment instructions are not available yet.", null);
   }
 
-  const expectedChainId = resolveSpawnChainId(session.chain);
+  const expectedChainId = resolveSpawnChainId(session.chain, playgroundMetadata, env);
 
   if (session.state !== "awaiting_payment") {
     return createAvailability(
@@ -167,13 +233,46 @@ export function getSpawnPaymentAvailability(
 }
 
 export function formatSpawnPaymentError(error: unknown): string {
+  if (error instanceof SpawnPaymentError) {
+    return error.message;
+  }
+
   if (
     typeof error === "object" &&
     error !== null &&
     "code" in error &&
-    error.code === 4001
+    error.code === USER_REJECTED_REQUEST_ERROR_CODE
   ) {
     return "Wallet rejected the payment transaction.";
+  }
+
+  if (error instanceof Error) {
+    const normalized = error.message.toLowerCase();
+
+    if (
+      normalized.includes("insufficient funds") &&
+      normalized.includes("gas")
+    ) {
+      return "Connected wallet does not have enough ETH to cover playground gas.";
+    }
+
+    if (
+      normalized.includes("transfer amount exceeds balance") ||
+      normalized.includes("insufficient balance") ||
+      normalized.includes("erc20")
+    ) {
+      return "Connected wallet does not have enough USDC for the quoted deposit.";
+    }
+
+    if (
+      normalized.includes("expired") ||
+      normalized.includes("quote ttl")
+    ) {
+      return new SpawnPaymentError(
+        "quote_expired",
+        "This spawn session expired before payment completed. Create a new session if the quote TTL elapsed or the playground reset."
+      ).message;
+    }
   }
 
   if (error instanceof Error && error.message.trim() !== "") {
@@ -187,9 +286,10 @@ export async function executeSpawnPayment(
   payment: SpawnPaymentInstructions,
   walletAddress: string,
   transport: WalletTransport,
+  playgroundMetadata: PlaygroundMetadata | null = null,
   env: Record<string, string | undefined> = import.meta.env
 ): Promise<SpawnPaymentExecutionResult> {
-  await ensureWalletChain(payment.chain, transport, env);
+  await connectWalletToSpawnChain(payment.chain, transport, playgroundMetadata, env);
 
   switch (payment.asset) {
     case "usdc": {

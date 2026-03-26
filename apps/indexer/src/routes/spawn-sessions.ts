@@ -95,6 +95,15 @@ async function resolveRegistryRecord(
 }
 
 export const spawnSessionRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/api/spawn-sessions", async (request) => {
+    const query = request.query as { limit?: string };
+    const limit = normalizeLimit(query.limit);
+
+    return {
+      items: await fastify.indexerStore.listSpawnSessionDetails(limit)
+    };
+  });
+
   fastify.post("/api/spawn-sessions", async (request, reply) => {
     if (!fastify.factoryClient.isConfigured()) {
       reply.code(503);

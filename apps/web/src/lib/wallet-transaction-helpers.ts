@@ -1,4 +1,4 @@
-import type { SpawnChain } from "@ic-automaton/shared";
+import type { PlaygroundMetadata, SpawnChain } from "@ic-automaton/shared";
 
 const BASE_CHAIN_ID = 8453;
 const DEFAULT_BASE_CHAIN_NAME = "Base";
@@ -9,6 +9,7 @@ const DEFAULT_BASE_USDC_CONTRACT_ADDRESS =
   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
 const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
+const ERC20_BALANCE_OF_SELECTOR = "0x70a08231";
 const ESCROW_DEPOSIT_SELECTOR = "0x1de26e16";
 
 export interface WalletChainMetadata {
@@ -26,6 +27,16 @@ export function stripHexPrefix(value: string): string {
 
 export function bigintToHex(value: bigint): string {
   return `0x${value.toString(16)}`;
+}
+
+export function hexQuantityToBigInt(value: string): bigint | null {
+  const normalized = value.trim().toLowerCase();
+
+  if (!/^0x[0-9a-f]+$/.test(normalized)) {
+    return null;
+  }
+
+  return BigInt(normalized);
 }
 
 function encodeAddressHex(address: string): string | null {
@@ -76,6 +87,16 @@ export function encodeErc20ApproveData(
   return `${ERC20_APPROVE_SELECTOR}${encodedSpender}${encodeUint256Hex(amount)}`;
 }
 
+export function encodeErc20BalanceOfData(address: string): string | null {
+  const encodedAddress = encodeAddressHex(address);
+
+  if (encodedAddress === null) {
+    return null;
+  }
+
+  return `${ERC20_BALANCE_OF_SELECTOR}${encodedAddress}`;
+}
+
 export function encodeEscrowDepositData(
   claimId: string,
   amount: bigint
@@ -114,25 +135,45 @@ export function parseDecimalAmount(value: string, decimals: number): bigint | nu
   return scaledWhole + scaledFraction;
 }
 
-export function resolveSpawnChainId(chain: SpawnChain): number | null {
-  switch (chain) {
-    case "base":
-      return BASE_CHAIN_ID;
-    default:
-      return null;
-  }
-}
-
 function resolveOptionalString(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
 }
 
+function resolveOptionalNumber(value: string | undefined): number | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function resolveSpawnChainId(
+  chain: SpawnChain,
+  playgroundMetadata: PlaygroundMetadata | null = null,
+  env: Record<string, string | undefined> = import.meta.env
+): number | null {
+  switch (chain) {
+    case "base":
+      return (
+        playgroundMetadata?.chain.id ??
+        resolveOptionalNumber(env.VITE_SPAWN_CHAIN_ID) ??
+        BASE_CHAIN_ID
+      );
+    default:
+      return null;
+  }
+}
+
 export function resolveSpawnChainMetadata(
   chain: SpawnChain,
+  playgroundMetadata: PlaygroundMetadata | null = null,
   env: Record<string, string | undefined> = import.meta.env
 ): WalletChainMetadata | null {
-  const chainId = resolveSpawnChainId(chain);
+  const chainId = resolveSpawnChainId(chain, playgroundMetadata, env);
 
   if (chainId === null) {
     return null;
@@ -140,6 +181,18 @@ export function resolveSpawnChainMetadata(
 
   switch (chain) {
     case "base":
+      if (playgroundMetadata !== null) {
+        return {
+          chainId,
+          chainName: playgroundMetadata.chain.name,
+          rpcUrl:
+            resolveOptionalString(playgroundMetadata.chain.publicRpcUrl) ?? null,
+          currencyName: playgroundMetadata.chain.nativeCurrency.name,
+          currencySymbol: playgroundMetadata.chain.nativeCurrency.symbol,
+          blockExplorerUrl: playgroundMetadata.chain.explorerUrl
+        };
+      }
+
       return {
         chainId,
         chainName: resolveOptionalString(env.VITE_SPAWN_CHAIN_NAME) ?? DEFAULT_BASE_CHAIN_NAME,

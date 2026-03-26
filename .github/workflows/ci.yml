@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Foundry
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L https://foundry.paradigm.xyz | bash
+          "$HOME/.foundry/bin/foundryup"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test workspaces
+        run: npm run test
+
+      - name: Test factory
+        run: cargo test -p factory
+
+      - name: Test EVM contracts
+        run: forge test --root evm
+
+      - name: Build web image
+        run: |
+          docker build \
+            -f apps/web/Dockerfile \
+            --build-arg VITE_INDEXER_BASE_URL= \
+            -t automaton-playground-web:ci \
+            .
+
+      - name: Build indexer image
+        run: docker build -f apps/indexer/Dockerfile -t automaton-playground-indexer:ci .
+
+      - name: Build rpc-gateway image
+        run: docker build -f apps/rpc-gateway/Dockerfile -t automaton-playground-rpc-gateway:ci .
+

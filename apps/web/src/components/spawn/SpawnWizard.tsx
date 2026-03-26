@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
-import type { CreateSpawnSessionRequest } from "@ic-automaton/shared";
+import type {
+  CreateSpawnSessionRequest,
+  PlaygroundMetadata
+} from "@ic-automaton/shared";
 
+import {
+  claimPlaygroundFaucet,
+  type PlaygroundFaucetClaimResponse
+} from "../../api/playground";
 import { fetchOpenRouterModels } from "../../api/openrouter";
+import { formatPlaygroundTimestamp } from "../../hooks/usePlayground";
 import {
   describeSpawnSessionProgress,
   formatSpawnSessionStateLabel,
@@ -12,11 +20,19 @@ import {
   type ProviderModelOption
 } from "../../lib/default-models";
 import {
+  connectWalletToSpawnChain,
   executeSpawnPayment,
   formatSpawnPaymentError,
   getSpawnPaymentAvailability,
   type SpawnPaymentExecutionResult
 } from "../../lib/spawn-payment";
+import {
+  encodeErc20BalanceOfData,
+  hexQuantityToBigInt,
+  parseDecimalAmount,
+  resolveSpawnChainId,
+  resolveSpawnUsdcContractAddress
+} from "../../lib/wallet-transaction-helpers";
 import {
   buildProviderSummary,
   chainOptions,
@@ -44,7 +60,17 @@ interface SpawnWizardProps {
   isOpen: boolean;
   onClose: () => void;
   onSpawned?: (canisterId: string) => void;
+  playgroundError: string | null;
+  playgroundIsFallback: boolean;
+  playgroundMetadata: PlaygroundMetadata | null;
   walletSession: WalletSession;
+}
+
+interface WalletBalanceState {
+  error: string | null;
+  ethWei: bigint | null;
+  isLoading: boolean;
+  usdcRaw: bigint | null;
 }
 
 const stepTitles = [
@@ -55,6 +81,18 @@ const stepTitles = [
   "Provider config",
   "Fund"
 ] as const;
+const USDC_DECIMALS = 6;
+const MINIMUM_GAS_WEI =
+  parseDecimalAmount("0.005", 18) ?? 5_000_000_000_000_000n;
+
+function createEmptyWalletBalanceState(): WalletBalanceState {
+  return {
+    error: null,
+    ethWei: null,
+    isLoading: false,
+    usdcRaw: null
+  };
+}
 
 function formatTimestamp(value: number): string {
   return new Intl.DateTimeFormat("en-GB", {
@@ -69,10 +107,87 @@ function formatNullableValue(value: string | null): string {
   return value ?? "pending";
 }
 
+function formatShortHash(value: string): string {
+  return `${value.slice(0, 10)}...${value.slice(-8)}`;
+}
+
+function formatTokenAmount(
+  value: bigint | null,
+  decimals: number,
+  symbol: string,
+  precision = 4
+): string {
+  if (value === null) {
+    return "Pending";
+  }
+
+  const divisor = 10n ** BigInt(decimals);
+  const whole = value / divisor;
+  const fraction = value % divisor;
+
+  if (decimals === 0) {
+    return `${whole.toString()} ${symbol}`;
+  }
+
+  const paddedFraction = fraction
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/, "")
+    .slice(0, precision);
+
+  return paddedFraction === ""
+    ? `${whole.toString()} ${symbol}`
+    : `${whole.toString()}.${paddedFraction} ${symbol}`;
+}
+
+function formatClaimWindow(seconds: number): string {
+  if (seconds % 86_400 === 0) {
+    return `${seconds / 86_400}d`;
+  }
+
+  if (seconds % 3_600 === 0) {
+    return `${seconds / 3_600}h`;
+  }
+
+  if (seconds % 60 === 0) {
+    return `${seconds / 60}m`;
+  }
+
+  return `${seconds}s`;
+}
+
+function formatFaucetAmounts(metadata: PlaygroundMetadata | null): string {
+  if (metadata === null) {
+    return "Faucet amounts pending.";
+  }
+
+  return metadata.faucet.claimAssetAmounts
+    .map((entry) => `${entry.amount} ${entry.asset.toUpperCase()}`)
+    .join(" + ");
+}
+
+function buildExplorerTransactionUrl(
+  explorerUrl: string | null,
+  txHash: string
+): string | null {
+  if (explorerUrl === null) {
+    return null;
+  }
+
+  try {
+    return new URL(`tx/${txHash}`, `${explorerUrl.replace(/\/?$/, "/")}`).toString();
+  } catch {
+    return null;
+  }
+}
+
 export function SpawnWizard({
   isOpen,
   onClose,
   onSpawned,
+  playgroundError,
+  playgroundIsFallback,
+  playgroundMetadata,
   walletSession
 }: SpawnWizardProps) {
   const [stepIndex, setStepIndex] = useState(0);
@@ -92,6 +207,21 @@ export function SpawnWizard({
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentResult, setPaymentResult] =
     useState<SpawnPaymentExecutionResult | null>(null);
+  const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
+  const [networkActionError, setNetworkActionError] = useState<string | null>(
+    null
+  );
+  const [networkActionMessage, setNetworkActionMessage] = useState<string | null>(
+    null
+  );
+  const [isClaimingFaucet, setIsClaimingFaucet] = useState(false);
+  const [faucetError, setFaucetError] = useState<string | null>(null);
+  const [faucetResult, setFaucetResult] =
+    useState<PlaygroundFaucetClaimResponse | null>(null);
+  const [walletBalances, setWalletBalances] = useState<WalletBalanceState>(
+    createEmptyWalletBalanceState()
+  );
+  const [balanceRefreshToken, setBalanceRefreshToken] = useState(0);
   const spawnSession = useSpawnSession();
   const viewerAddress = walletSession.address;
 
@@ -148,12 +278,32 @@ export function SpawnWizard({
   const hasTrackedSession = spawnSession.sessionId !== null;
   const activeSession = spawnSession.session;
   const paymentInstructions = spawnSession.paymentInstructions;
+  const expectedChainId = resolveSpawnChainId(state.chain, playgroundMetadata);
+  const walletOnExpectedChain =
+    expectedChainId !== null && walletSession.chainId === expectedChainId;
+  const requiredUsdcRaw =
+    state.asset === "usdc"
+      ? parseDecimalAmount(state.grossAmountInput, USDC_DECIMALS)
+      : null;
+  const hasEnoughEth =
+    walletBalances.ethWei === null
+      ? null
+      : walletBalances.ethWei >= MINIMUM_GAS_WEI;
+  const hasEnoughUsdc =
+    walletBalances.usdcRaw === null || requiredUsdcRaw === null
+      ? null
+      : walletBalances.usdcRaw >= requiredUsdcRaw;
+  const hasKnownFundingShortfall =
+    hasEnoughEth === false || hasEnoughUsdc === false;
   const canSubmit =
     viewerAddress !== null &&
+    walletOnExpectedChain &&
     state.chain === "base" &&
     fundingPreview.minimumMet &&
     fundingPreview.grossAmount > 0 &&
-    !spawnSession.isCreating;
+    !spawnSession.isCreating &&
+    !playgroundMetadata?.maintenance &&
+    !hasKnownFundingShortfall;
 
   useEffect(() => {
     if (
@@ -174,6 +324,107 @@ export function SpawnWizard({
     setIsSubmittingPayment(false);
   }, [spawnSession.sessionId]);
 
+  useEffect(() => {
+    setNetworkActionError(null);
+    setNetworkActionMessage(null);
+  }, [walletSession.chainId, walletSession.selectedProviderId]);
+
+  useEffect(() => {
+    if (!isOpen || viewerAddress === null || !walletOnExpectedChain) {
+      setWalletBalances(createEmptyWalletBalanceState());
+      return;
+    }
+
+    const usdcContractAddress = resolveSpawnUsdcContractAddress(state.chain);
+    const balanceOfData = encodeErc20BalanceOfData(viewerAddress);
+
+    if (balanceOfData === null) {
+      setWalletBalances({
+        error: "Unable to encode the playground USDC balance request.",
+        ethWei: null,
+        isLoading: false,
+        usdcRaw: null
+      });
+      return;
+    }
+
+    let cancelled = false;
+
+    setWalletBalances((current) => ({
+      ...current,
+      error: null,
+      isLoading: true
+    }));
+
+    void Promise.all([
+      walletSession.request<string>({
+        method: "eth_getBalance",
+        params: [viewerAddress, "latest"]
+      }),
+      usdcContractAddress === null
+        ? Promise.resolve<string | null>(null)
+        : walletSession.request<string>({
+            method: "eth_call",
+            params: [
+              {
+                data: balanceOfData,
+                to: usdcContractAddress
+              },
+              "latest"
+            ]
+          })
+    ])
+      .then(([ethBalanceHex, usdcBalanceHex]) => {
+        if (cancelled) {
+          return;
+        }
+
+        const ethWei = hexQuantityToBigInt(ethBalanceHex);
+        const usdcRaw =
+          usdcBalanceHex === null ? null : hexQuantityToBigInt(usdcBalanceHex);
+
+        if (ethWei === null || (usdcBalanceHex !== null && usdcRaw === null)) {
+          setWalletBalances({
+            error: "Wallet returned an unreadable playground balance payload.",
+            ethWei: null,
+            isLoading: false,
+            usdcRaw: null
+          });
+          return;
+        }
+
+        setWalletBalances({
+          error: null,
+          ethWei,
+          isLoading: false,
+          usdcRaw
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        setWalletBalances({
+          error: formatSpawnPaymentError(error),
+          ethWei: null,
+          isLoading: false,
+          usdcRaw: null
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    balanceRefreshToken,
+    isOpen,
+    state.chain,
+    viewerAddress,
+    walletOnExpectedChain,
+    walletSession.selectedProviderId
+  ]);
+
   function resetWizard() {
     setStepIndex(0);
     setState(createInitialSpawnWizardState());
@@ -185,6 +436,14 @@ export function SpawnWizard({
     setIsSubmittingPayment(false);
     setPaymentError(null);
     setPaymentResult(null);
+    setIsSwitchingNetwork(false);
+    setNetworkActionError(null);
+    setNetworkActionMessage(null);
+    setIsClaimingFaucet(false);
+    setFaucetError(null);
+    setFaucetResult(null);
+    setWalletBalances(createEmptyWalletBalanceState());
+    setBalanceRefreshToken(0);
   }
 
   function closeWizard() {
@@ -215,10 +474,19 @@ export function SpawnWizard({
       return null;
     }
 
+    const grossAmount =
+      state.asset === "usdc"
+        ? parseDecimalAmount(state.grossAmountInput, USDC_DECIMALS)?.toString() ?? null
+        : null;
+
+    if (grossAmount === null) {
+      return null;
+    }
+
     return {
       stewardAddress: viewerAddress,
       asset: state.asset,
-      grossAmount: state.grossAmountInput,
+      grossAmount,
       config: {
         chain: state.chain,
         risk: state.risk,
@@ -239,7 +507,46 @@ export function SpawnWizard({
     };
   }
 
-  function handleSubmit() {
+  async function submitPaymentForSession(
+    grossPayment: SpawnPaymentExecutionResult | null,
+    payment:
+      | {
+          sessionId: string;
+          claimId: string;
+          chain: "base";
+          asset: "usdc";
+          paymentAddress: string;
+          grossAmount: string;
+          quoteTermsHash: string;
+          expiresAt: number;
+        }
+      | null
+  ) {
+    if (viewerAddress === null || payment === null || grossPayment !== null) {
+      return;
+    }
+
+    setIsSubmittingPayment(true);
+    setPaymentError(null);
+    setPaymentResult(null);
+
+    try {
+      const result = await executeSpawnPayment(
+        payment,
+        viewerAddress,
+        walletSession,
+        playgroundMetadata
+      );
+      setPaymentResult(result);
+      setBalanceRefreshToken((current) => current + 1);
+    } catch (error) {
+      setPaymentError(formatSpawnPaymentError(error));
+    } finally {
+      setIsSubmittingPayment(false);
+    }
+  }
+
+  async function handleSubmit() {
     if (!canSubmit || hasTrackedSession) {
       return;
     }
@@ -250,13 +557,20 @@ export function SpawnWizard({
       return;
     }
 
-    void spawnSession.create(request);
+    const response = await spawnSession.create(request);
+
+    if (response === null) {
+      return;
+    }
+
+    await submitPaymentForSession(null, response.quote.payment);
   }
 
   const paymentAvailability = getSpawnPaymentAvailability(
     activeSession,
     paymentInstructions,
-    walletSession
+    walletSession,
+    playgroundMetadata
   );
 
   async function handlePayment() {
@@ -270,23 +584,172 @@ export function SpawnWizard({
       return;
     }
 
-    setIsSubmittingPayment(true);
-    setPaymentError(null);
-    setPaymentResult(null);
+    await submitPaymentForSession(paymentResult, paymentInstructions);
+  }
+
+  async function handleWalletConnect() {
+    await walletSession.connect();
+  }
+
+  async function handleNetworkAction() {
+    if (!walletSession.hasProvider) {
+      setNetworkActionError("No injected wallet provider is available.");
+      return;
+    }
+
+    setIsSwitchingNetwork(true);
+    setNetworkActionError(null);
+    setNetworkActionMessage(null);
 
     try {
-      const result = await executeSpawnPayment(
-        paymentInstructions,
-        viewerAddress,
-        walletSession
+      await connectWalletToSpawnChain(
+        state.chain,
+        walletSession,
+        playgroundMetadata,
+        import.meta.env
       );
-      setPaymentResult(result);
+      setNetworkActionMessage(
+        `Wallet is ready on ${playgroundMetadata?.chain.name ?? "the playground network"}.`
+      );
+      setBalanceRefreshToken((current) => current + 1);
     } catch (error) {
-      setPaymentError(formatSpawnPaymentError(error));
+      setNetworkActionError(formatSpawnPaymentError(error));
     } finally {
-      setIsSubmittingPayment(false);
+      setIsSwitchingNetwork(false);
     }
   }
+
+  async function handleClaimFaucet() {
+    if (viewerAddress === null) {
+      setFaucetError("Connect a wallet before claiming playground funds.");
+      return;
+    }
+
+    if (playgroundMetadata === null || !playgroundMetadata.faucet.available) {
+      setFaucetError("Playground faucet is currently unavailable.");
+      return;
+    }
+
+    if (playgroundMetadata.maintenance) {
+      setFaucetError(
+        "Playground is in maintenance mode while the reset completes."
+      );
+      return;
+    }
+
+    setIsClaimingFaucet(true);
+    setFaucetError(null);
+    setFaucetResult(null);
+
+    try {
+      const result = await claimPlaygroundFaucet(viewerAddress);
+      setFaucetResult(result);
+      setBalanceRefreshToken((current) => current + 1);
+    } catch (error) {
+      setFaucetError(formatSpawnPaymentError(error));
+    } finally {
+      setIsClaimingFaucet(false);
+    }
+  }
+
+  const playgroundChainName =
+    playgroundMetadata?.chain.name ?? getActiveChainLabel(state.chain);
+  const playgroundNote =
+    playgroundMetadata === null
+      ? "Canisters, balances, and session state are non-durable in this playground."
+      : playgroundMetadata.maintenance
+        ? `Maintenance mode is active. Last reset ${formatPlaygroundTimestamp(playgroundMetadata.reset.lastResetAt, "pending")} · next window ${formatPlaygroundTimestamp(playgroundMetadata.reset.nextResetAt, "pending")}. New sessions are paused while the reset completes.`
+        : `Last reset ${formatPlaygroundTimestamp(playgroundMetadata.reset.lastResetAt, "pending")} · next window ${formatPlaygroundTimestamp(playgroundMetadata.reset.nextResetAt, "pending")} · ${playgroundMetadata.reset.cadenceLabel}. Canisters, balances, and session state are non-durable.`;
+  const connectButtonLabel =
+    viewerAddress !== null
+      ? "Wallet connected"
+      : walletSession.selectedProviderName !== null
+        ? `Connect ${walletSession.selectedProviderName}`
+        : "Connect wallet";
+  const walletStatusMessage = !walletSession.hasProvider
+    ? "No injected wallet detected. Install or enable MetaMask, Rabby, or another EIP-6963 wallet."
+    : viewerAddress === null
+      ? "Choose the wallet you want to fund, then connect it here before spawning."
+      : walletSession.selectedProviderName !== null
+        ? `${walletSession.selectedProviderName} is connected for playground funding and payment.`
+        : "Wallet is connected for playground funding and payment.";
+  const networkStatusMessage = networkActionMessage
+    ? networkActionMessage
+    : !walletSession.hasProvider
+      ? "A wallet provider is required before the playground network can be added."
+      : walletOnExpectedChain
+        ? `Wallet is already on ${playgroundChainName}.`
+        : walletSession.chainId === null
+          ? `Use the button below to add and switch to ${playgroundChainName}.`
+          : `Wallet is connected to chain ${walletSession.chainId}. Switch to ${playgroundChainName} before spawning.`;
+  const faucetDisabledReason = playgroundMetadata?.maintenance
+    ? "Maintenance is active while the playground reset completes."
+    : playgroundMetadata === null
+      ? "Playground metadata is unavailable."
+      : !playgroundMetadata.faucet.available
+        ? "Faucet unavailable."
+        : viewerAddress === null
+          ? "Connect the wallet you want to fund."
+          : null;
+  const faucetStatusMessage =
+    faucetResult !== null
+      ? `Faucet funded ${formatFaucetAmounts(playgroundMetadata)} for the connected wallet.`
+      : playgroundMetadata === null
+        ? "Faucet limits are unavailable until playground metadata loads."
+        : `Faucet sends ${formatFaucetAmounts(playgroundMetadata)}. Limit ${playgroundMetadata.faucet.claimLimits.maxClaimsPerWallet} wallet / ${playgroundMetadata.faucet.claimLimits.maxClaimsPerIp} IP every ${formatClaimWindow(playgroundMetadata.faucet.claimLimits.windowSeconds)}.`;
+  const faucetTransactions =
+    faucetResult === null
+      ? []
+      : ([
+          {
+            asset: "eth" as const,
+            hash: faucetResult.txHashes.eth,
+            href: buildExplorerTransactionUrl(
+              playgroundMetadata?.chain.explorerUrl ?? null,
+              faucetResult.txHashes.eth
+            )
+          },
+          {
+            asset: "usdc" as const,
+            hash: faucetResult.txHashes.usdc,
+            href: buildExplorerTransactionUrl(
+              playgroundMetadata?.chain.explorerUrl ?? null,
+              faucetResult.txHashes.usdc
+            )
+          }
+        ] as const);
+  const ethBalance = viewerAddress === null
+    ? "Wallet required"
+    : !walletOnExpectedChain
+      ? "Switch to playground"
+      : formatTokenAmount(walletBalances.ethWei, 18, "ETH");
+  const usdcBalance = viewerAddress === null
+    ? "Wallet required"
+    : !walletOnExpectedChain
+      ? "Switch to playground"
+      : formatTokenAmount(walletBalances.usdcRaw, USDC_DECIMALS, "USDC", 2);
+  const ethStatus = viewerAddress === null
+    ? "Connect wallet"
+    : !walletOnExpectedChain
+      ? "Wrong chain"
+      : walletBalances.isLoading
+        ? "Checking"
+        : hasEnoughEth === false
+          ? "Insufficient ETH for gas"
+          : hasEnoughEth === true
+            ? "Ready for gas"
+            : "Balance pending";
+  const usdcStatus = viewerAddress === null
+    ? "Connect wallet"
+    : !walletOnExpectedChain
+      ? "Wrong chain"
+      : walletBalances.isLoading
+        ? "Checking"
+        : hasEnoughUsdc === false
+          ? "Insufficient USDC"
+          : hasEnoughUsdc === true
+            ? "Ready for payment"
+            : "Balance pending";
 
   return (
     <div
@@ -425,18 +888,71 @@ export function SpawnWizard({
           {stepIndex === 5 ? (
             <FundStep
               asset={state.asset}
+              balances={{
+                errorMessage: walletBalances.error,
+                ethBalance,
+                ethStatus,
+                isLoading: walletBalances.isLoading,
+                usdcBalance,
+                usdcStatus
+              }}
+              faucet={{
+                actionLabel: "Get test funds",
+                disabledReason: faucetDisabledReason,
+                errorMessage: faucetError,
+                isPending: isClaimingFaucet,
+                statusMessage: faucetStatusMessage,
+                txLinks: faucetTransactions.map((transaction) => ({
+                  asset: transaction.asset,
+                  hash: formatShortHash(transaction.hash),
+                  href: transaction.href
+                }))
+              }}
               grossAmountInput={state.grossAmountInput}
+              network={{
+                actionLabel: "Add / switch playground network",
+                disabled:
+                  !walletSession.hasProvider ||
+                  isSwitchingNetwork ||
+                  walletOnExpectedChain ||
+                  expectedChainId === null,
+                errorMessage: networkActionError,
+                isPending: isSwitchingNetwork,
+                statusMessage: networkStatusMessage
+              }}
               onAssetChange={(asset) => {
                 setState((current) => ({
                   ...current,
                   asset
                 }));
               }}
+              onClaimFaucet={() => {
+                void handleClaimFaucet();
+              }}
+              onConnectWallet={() => {
+                void handleWalletConnect();
+              }}
               onGrossAmountChange={(grossAmountInput) => {
                 setState((current) => ({
                   ...current,
                   grossAmountInput
                 }));
+              }}
+              onNetworkAction={() => {
+                void handleNetworkAction();
+              }}
+              onProviderChange={(providerId) => {
+                walletSession.setSelectedProvider(providerId);
+              }}
+              playground={{
+                chainId: expectedChainId,
+                chainName: playgroundChainName,
+                environmentLabel:
+                  playgroundMetadata?.environmentLabel ?? "Playground metadata pending",
+                maintenance: playgroundMetadata?.maintenance ?? false,
+                note: playgroundNote,
+                runtimeError: playgroundError,
+                usesFallback: playgroundIsFallback
               }}
               preview={fundingPreview}
               summary={{
@@ -450,6 +966,16 @@ export function SpawnWizard({
                 braveConfigured: state.braveSearchApiKey.trim() !== ""
               }}
               validationMessage={validationMessage}
+              wallet={{
+                address: viewerAddress,
+                connectLabel: connectButtonLabel,
+                errorMessage: walletSession.errorMessage,
+                hasProvider: walletSession.hasProvider,
+                isConnecting: walletSession.isConnecting,
+                providerOptions: walletSession.providers,
+                selectedProviderId: walletSession.selectedProviderId,
+                statusMessage: walletStatusMessage
+              }}
             />
           ) : null}
 
@@ -524,7 +1050,7 @@ export function SpawnWizard({
                     }}
                     type="button"
                   >
-                    {isSubmittingPayment ? "Submitting Payment..." : "Pay With Wallet"}
+                    {isSubmittingPayment ? "Submitting payment..." : "Pay with wallet"}
                   </button>
                 ) : null}
                 <button
@@ -535,7 +1061,7 @@ export function SpawnWizard({
                   }}
                   type="button"
                 >
-                  Retry Spawn
+                  Retry spawn
                 </button>
                 <button
                   className="spawn-nav-button"
@@ -545,7 +1071,7 @@ export function SpawnWizard({
                   }}
                   type="button"
                 >
-                  Claim Refund
+                  Claim refund
                 </button>
               </div>
 
@@ -566,10 +1092,26 @@ export function SpawnWizard({
                       : "Factory session data is mirrored here when the indexer reports it."}
               </p>
 
+              {activeSession.state === "expired" ? (
+                <p className="spawn-session-error" role="alert">
+                  This session expired before completion. The quote TTL may have
+                  elapsed or the playground may have reset. Start a new session
+                  and claim a refund first if one is available.
+                </p>
+              ) : null}
+
+              {playgroundMetadata?.maintenance ? (
+                <p className="spawn-session-error" role="alert">
+                  Playground maintenance is active. New sessions are paused until
+                  the reset completes.
+                </p>
+              ) : null}
+
               {paymentResult !== null ? (
                 <p className="spawn-session-meta">
-                  Payment submitted. Approval tx: {paymentResult.approvalTxHash}. Deposit tx:{" "}
-                  {paymentResult.paymentTxHash}.
+                  Payment submitted. Approval tx:{" "}
+                  {formatShortHash(paymentResult.approvalTxHash)}. Deposit tx:{" "}
+                  {formatShortHash(paymentResult.paymentTxHash)}.
                 </p>
               ) : null}
 
@@ -600,7 +1142,7 @@ export function SpawnWizard({
                 onClick={resetTrackedSession}
                 type="button"
               >
-                New Session
+                New session
               </button>
             </>
           ) : (
@@ -617,7 +1159,11 @@ export function SpawnWizard({
                 className="spawn-nav-button is-primary"
                 disabled={stepIndex === TOTAL_SPAWN_STEPS - 1 ? !canSubmit : false}
                 onClick={
-                  stepIndex === TOTAL_SPAWN_STEPS - 1 ? handleSubmit : advanceStep
+                  stepIndex === TOTAL_SPAWN_STEPS - 1
+                    ? () => {
+                        void handleSubmit();
+                      }
+                    : advanceStep
                 }
                 type="button"
               >

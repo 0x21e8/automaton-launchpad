@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "mode": "hard-reset",
+    "gitCommit": "0123456789abcdef0123456789abcdef01234567",
+    "environmentVersion": "playground-0123456789ab",
+    "createdAt": "2026-03-26T21:00:00Z"
+  },
+  "images": {
+    "web": {
+      "repository": "ghcr.io/example/automaton-playground-web",
+      "tag": "0123456789abcdef0123456789abcdef01234567",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "ref": "ghcr.io/example/automaton-playground-web@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "indexer": {
+      "repository": "ghcr.io/example/automaton-playground-indexer",
+      "tag": "0123456789abcdef0123456789abcdef01234567",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "ref": "ghcr.io/example/automaton-playground-indexer@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "rpcGateway": {
+      "repository": "ghcr.io/example/automaton-playground-rpc-gateway",
+      "tag": "0123456789abcdef0123456789abcdef01234567",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "ref": "ghcr.io/example/automaton-playground-rpc-gateway@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  },
+  "childArtifact": {
+    "url": "https://artifacts.example.com/ic-automaton/child-automaton-0123456789abcdef0123456789abcdef01234567.wasm.gz",
+    "fileName": "child-automaton-0123456789abcdef0123456789abcdef01234567.wasm.gz",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "versionCommit": "89abcdef0123456789abcdef0123456789abcdef"
+  },
+  "fork": {
+    "chainId": 20260326,
+    "upstreamRpcUrlEnv": "LOCAL_EVM_FORK_URL",
+    "blockNumber": 31234567
+  }
+}
+

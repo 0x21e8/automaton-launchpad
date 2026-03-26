@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const rootDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultDeploymentPath = path.join(rootDir, "tmp", "local-escrow-deployment.json");
 const deploymentPath = process.env.LOCAL_EVM_DEPLOYMENT_FILE ?? defaultDeploymentPath;
 const localInboxDeploymentPath =
@@ -67,6 +69,30 @@ function readOptionalTrimmedFile(filePath) {
   return normalizeOptionalString(fs.readFileSync(filePath, "utf8"));
 }
 
+function resolveOptionalWasmSha256() {
+  const explicitSha = normalizeOptionalString(
+    process.env.CHILD_WASM_SHA256 ?? process.env.FACTORY_WASM_SHA256
+  );
+
+  if (explicitSha !== null) {
+    return explicitSha;
+  }
+
+  const childWasmPath = normalizeOptionalString(process.env.CHILD_WASM_PATH);
+  if (childWasmPath === null) {
+    return null;
+  }
+
+  const resolvedPath = path.resolve(rootDir, childWasmPath);
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`missing CHILD_WASM_PATH at ${resolvedPath}`);
+  }
+
+  return createHash("sha256")
+    .update(fs.readFileSync(resolvedPath))
+    .digest("hex");
+}
+
 function escapeText(value) {
   return value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
 }
@@ -93,7 +119,8 @@ function renderOptVecText(values) {
     : `opt vec { ${values.map((value) => `"${escapeText(value)}"`).join("; ")} }`;
 }
 
-const versionCommit = process.env.FACTORY_VERSION_COMMIT ?? "dev-build";
+const versionCommit =
+  process.env.CHILD_VERSION_COMMIT ?? process.env.FACTORY_VERSION_COMMIT ?? "dev-build";
 const paymentAddress = process.env.FACTORY_PAYMENT_ADDRESS ?? deployment.paymentAddress;
 const escrowAddress =
   process.env.FACTORY_ESCROW_CONTRACT_ADDRESS ?? deployment.escrowContractAddress;
@@ -143,6 +170,7 @@ const cyclesPerSpawn =
 const minPoolBalance = normalizeOptionalInteger(process.env.FACTORY_MIN_POOL_BALANCE) ?? 0;
 const estimatedOutcallCyclesPerInterval =
   normalizeOptionalInteger(process.env.FACTORY_ESTIMATED_OUTCALL_CYCLES_PER_INTERVAL) ?? 0;
+const wasmSha256 = resolveOptionalWasmSha256();
 
 if (
   childInboxContractAddress !== null &&
@@ -201,7 +229,7 @@ const candid = `(
     estimated_outcall_cycles_per_interval = opt ${estimatedOutcallCyclesPerInterval};
     session_ttl_ms = null;
     version_commit = opt "${versionCommit}";
-    wasm_sha256 = null;
+    wasm_sha256 = ${renderOptText(wasmSha256)};
   }
 )`;
 

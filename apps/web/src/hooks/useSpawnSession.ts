@@ -66,8 +66,8 @@ export function describeSpawnSessionProgress(session: SpawnSession): string {
         : "Spawn failed and is waiting for expiration before any refund path opens.";
     case "expired":
       return session.refundable
-        ? "This session expired unresolved. Funds can now be reclaimed through refund."
-        : "This session expired and no additional action is currently available.";
+        ? "Funds can now be reclaimed through refund. This session expired unresolved because the quote TTL may have elapsed or the playground may have reset."
+        : "This session expired. The quote TTL may have elapsed or the playground may have reset before completion.";
     default:
       return "Spawn status unavailable.";
   }

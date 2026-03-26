@@ -264,4 +264,78 @@ describe("sqlite store", () => {
 
     await store.close();
   });
+
+  it("stores faucet claims and queries wallet/ip windows independently", async () => {
+    const databasePath = await createDatabasePath();
+    const store = createSqliteStore({
+      databasePath
+    });
+
+    await store.initialize();
+    await store.recordFaucetClaim({
+      walletAddress: "0x00000000000000000000000000000000000000aa",
+      ipHash: "ip-hash-1",
+      claimedAt: 1_710_000_000_000,
+      ethAmount: "1",
+      usdcAmount: "250",
+      txSummary: {
+        txHashes: {
+          eth: "0xeth",
+          usdc: "0xusdc"
+        }
+      }
+    });
+    await store.recordFaucetClaim({
+      walletAddress: "0x00000000000000000000000000000000000000bb",
+      ipHash: "ip-hash-1",
+      claimedAt: 1_710_000_100_000,
+      ethAmount: "1",
+      usdcAmount: "250",
+      txSummary: {
+        txHashes: {
+          eth: "0xeth-2",
+          usdc: "0xusdc-2"
+        }
+      }
+    });
+
+    await expect(
+      store.getFaucetClaimWindowStats({
+        walletAddress: "0x00000000000000000000000000000000000000aa",
+        since: 1_709_999_999_999
+      })
+    ).resolves.toEqual({
+      count: 1,
+      oldestClaimAt: 1_710_000_000_000
+    });
+
+    await expect(
+      store.getFaucetClaimWindowStats({
+        ipHash: "ip-hash-1",
+        since: 1_709_999_999_999
+      })
+    ).resolves.toEqual({
+      count: 2,
+      oldestClaimAt: 1_710_000_000_000
+    });
+
+    const database = new BetterSqlite3(databasePath);
+    const columns = database
+      .prepare<{ name: string }>("PRAGMA table_info(faucet_claims);")
+      .all()
+      .map((column) => column.name);
+    database.close();
+
+    expect(columns).toEqual([
+      "claim_id",
+      "wallet_address",
+      "ip_hash",
+      "claimed_at",
+      "eth_amount",
+      "usdc_amount",
+      "tx_summary_json"
+    ]);
+
+    await store.close();
+  });
 });

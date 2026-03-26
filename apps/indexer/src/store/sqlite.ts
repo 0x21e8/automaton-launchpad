@@ -67,6 +67,26 @@ export interface SpawnRegistryQuery {
   limit: number;
 }
 
+export interface FaucetClaimWindowQuery {
+  walletAddress?: string;
+  ipHash?: string;
+  since: number;
+}
+
+export interface FaucetClaimWindowStats {
+  count: number;
+  oldestClaimAt: number | null;
+}
+
+export interface FaucetClaimRecord {
+  walletAddress: string;
+  ipHash: string;
+  claimedAt: number;
+  ethAmount: string;
+  usdcAmount: string;
+  txSummary: Record<string, unknown>;
+}
+
 export interface IndexerStore {
   initialize(): Promise<void>;
   close(): Promise<void>;
@@ -80,6 +100,7 @@ export interface IndexerStore {
   upsertAutomaton(detail: AutomatonDetail): Promise<void>;
   listMonologue(canisterId: string, query: MonologueQuery): Promise<MonologuePage>;
   appendMonologue(canisterId: string, entries: MonologueEntry[]): Promise<void>;
+  listSpawnSessionDetails(limit: number): Promise<SpawnSessionDetail[]>;
   getSpawnSessionDetail(sessionId: string): Promise<SpawnSessionDetail | null>;
   upsertSpawnSession(detail: SpawnSessionDetail): Promise<void>;
   listSpawnedAutomatonRegistry(query: SpawnRegistryQuery): Promise<{
@@ -89,6 +110,8 @@ export interface IndexerStore {
   getSpawnedAutomatonRegistryRecord(canisterId: string): Promise<SpawnedAutomatonRecord | null>;
   upsertSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]): Promise<void>;
   replaceSpawnedAutomatonRegistry(records: SpawnedAutomatonRecord[]): Promise<void>;
+  getFaucetClaimWindowStats(query: FaucetClaimWindowQuery): Promise<FaucetClaimWindowStats>;
+  recordFaucetClaim(claim: FaucetClaimRecord): Promise<void>;
   setPrice(symbol: string, value: number | null): Promise<void>;
 }
 
@@ -597,6 +620,37 @@ class BetterSqliteStore implements IndexerStore {
     } satisfies SpawnSessionDetail;
   }
 
+  async listSpawnSessionDetails(limit: number) {
+    await this.initialize();
+    const database = this.getDatabase();
+    const rows = database
+      .prepare<{
+        session_json: string;
+        payment_json: string | null;
+        audit_json: string;
+        registry_json: string | null;
+      }>(
+        `SELECT session_json, payment_json, audit_json, registry_json
+         FROM spawn_sessions
+         WHERE payment_json IS NOT NULL
+         ORDER BY updated_at DESC, session_id DESC
+         LIMIT ?;`
+      )
+      .all(limit);
+
+    return rows.map((row) => {
+      return {
+        session: JSON.parse(row.session_json) as SpawnSessionDetail["session"],
+        payment: JSON.parse(row.payment_json ?? "null") as SpawnSessionDetail["payment"],
+        audit: JSON.parse(row.audit_json) as SpawnSessionDetail["audit"],
+        registryRecord:
+          row.registry_json === null
+            ? null
+            : (JSON.parse(row.registry_json) as SpawnSessionDetail["registryRecord"])
+      } satisfies SpawnSessionDetail;
+    });
+  }
+
   async upsertSpawnSession(detail: SpawnSessionDetail) {
     await this.initialize();
     const database = this.getDatabase();
@@ -805,6 +859,71 @@ class BetterSqliteStore implements IndexerStore {
     });
 
     replaceRecords(normalizedRecords);
+  }
+
+  async getFaucetClaimWindowStats(query: FaucetClaimWindowQuery) {
+    await this.initialize();
+    const database = this.getDatabase();
+    const clauses = ["claimed_at >= ?"];
+    const parameters: SqliteValue[] = [query.since];
+
+    if (query.walletAddress) {
+      clauses.push("wallet_address = ?");
+      parameters.push(query.walletAddress);
+    }
+
+    if (query.ipHash) {
+      clauses.push("ip_hash = ?");
+      parameters.push(query.ipHash);
+    }
+
+    if (clauses.length === 1) {
+      throw new Error("Faucet claim stats query requires a wallet address or IP hash.");
+    }
+
+    const row = database
+      .prepare<{
+        count: number;
+        oldest_claim_at: number | null;
+      }>(
+        `SELECT COUNT(*) AS count, MIN(claimed_at) AS oldest_claim_at
+         FROM faucet_claims
+         WHERE ${clauses.join(" AND ")};`
+      )
+      .get(...parameters);
+
+    return {
+      count: Number(row?.count ?? 0),
+      oldestClaimAt:
+        row?.oldest_claim_at === null || row?.oldest_claim_at === undefined
+          ? null
+          : Number(row.oldest_claim_at)
+    };
+  }
+
+  async recordFaucetClaim(claim: FaucetClaimRecord) {
+    await this.initialize();
+    const database = this.getDatabase();
+
+    database
+      .prepare(
+        `INSERT INTO faucet_claims (
+          wallet_address,
+          ip_hash,
+          claimed_at,
+          eth_amount,
+          usdc_amount,
+          tx_summary_json
+        ) VALUES (?, ?, ?, ?, ?, ?);`
+      )
+      .run(
+        claim.walletAddress,
+        claim.ipHash,
+        claim.claimedAt,
+        claim.ethAmount,
+        claim.usdcAmount,
+        JSON.stringify(claim.txSummary)
+      );
   }
 
   async setPrice(symbol: string, value: number | null) {

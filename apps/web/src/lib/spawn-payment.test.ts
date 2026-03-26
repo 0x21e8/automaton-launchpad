@@ -7,6 +7,7 @@ import {
 } from "@ic-automaton/shared";
 
 import {
+  connectWalletToSpawnChain,
   executeSpawnPayment,
   formatSpawnPaymentError,
   getSpawnPaymentAvailability
@@ -72,6 +73,50 @@ function createPayment(
   };
 }
 
+function createPlaygroundMetadata() {
+  return {
+    environmentLabel: "Automaton Playground",
+    environmentVersion: "runtime-2026.03.26+sha.abcdef",
+    maintenance: false,
+    chain: {
+      id: 20_260_326,
+      name: "Automaton Playground",
+      publicRpcUrl: "https://rpc.playground.example.com",
+      nativeCurrency: {
+        name: "Ether",
+        symbol: "ETH",
+        decimals: 18
+      },
+      explorerUrl: "https://otter.playground.example.com"
+    },
+    faucet: {
+      available: true,
+      claimLimits: {
+        windowSeconds: 86_400,
+        maxClaimsPerWallet: 1,
+        maxClaimsPerIp: 1
+      },
+      claimAssetAmounts: [
+        {
+          asset: "eth" as const,
+          amount: "1",
+          decimals: 18
+        },
+        {
+          asset: "usdc" as const,
+          amount: "250",
+          decimals: 6
+        }
+      ]
+    },
+    reset: {
+      lastResetAt: null,
+      nextResetAt: null,
+      cadenceLabel: "Daily hard reset"
+    }
+  };
+}
+
 describe("spawn payment executor", () => {
   it("submits approval and deposit transactions using session instructions", async () => {
     const request = vi
@@ -89,6 +134,7 @@ describe("spawn payment executor", () => {
       payment,
       "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
       { request },
+      null,
       {
         VITE_SPAWN_USDC_CONTRACT_ADDRESS:
           "0x3333333333333333333333333333333333333333"
@@ -128,9 +174,13 @@ describe("spawn payment executor", () => {
     });
   });
 
-  it("adds the configured local chain when the wallet does not know chain 8453 yet", async () => {
+  it("adds and switches to the runtime playground chain when the wallet does not know it yet", async () => {
     const request = vi
       .fn()
+      .mockRejectedValueOnce({
+        code: 4902,
+        message: "Unknown chain."
+      })
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce("0xapprove")
@@ -145,36 +195,38 @@ describe("spawn payment executor", () => {
       payment,
       "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
       { request },
+      createPlaygroundMetadata(),
       {
-        VITE_SPAWN_CHAIN_NAME: "Base Local Fork",
-        VITE_SPAWN_CHAIN_RPC_URL: "http://127.0.0.1:18545",
-        VITE_SPAWN_CHAIN_BLOCK_EXPLORER_URL: "",
         VITE_SPAWN_USDC_CONTRACT_ADDRESS:
           "0x3333333333333333333333333333333333333333"
       }
     );
 
     expect(request).toHaveBeenNthCalledWith(1, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x13525e6" }]
+    });
+    expect(request).toHaveBeenNthCalledWith(2, {
       method: "wallet_addEthereumChain",
       params: [
         {
-          chainId: "0x2105",
-          chainName: "Base Local Fork",
-          rpcUrls: ["http://127.0.0.1:18545"],
+          chainId: "0x13525e6",
+          chainName: "Automaton Playground",
+          rpcUrls: ["https://rpc.playground.example.com"],
           nativeCurrency: {
             name: "Ether",
             symbol: "ETH",
             decimals: 18
           },
-          blockExplorerUrls: ["https://basescan.org"]
+          blockExplorerUrls: ["https://otter.playground.example.com"]
         }
       ]
     });
-    expect(request).toHaveBeenNthCalledWith(2, {
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: "0x2105" }]
-    });
     expect(request).toHaveBeenNthCalledWith(3, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x13525e6" }]
+    });
+    expect(request).toHaveBeenNthCalledWith(4, {
       method: "eth_sendTransaction",
       params: [
         {
@@ -186,7 +238,7 @@ describe("spawn payment executor", () => {
         }
       ]
     });
-    expect(request).toHaveBeenNthCalledWith(4, {
+    expect(request).toHaveBeenNthCalledWith(5, {
       method: "eth_sendTransaction",
       params: [
         {
@@ -203,6 +255,53 @@ describe("spawn payment executor", () => {
     });
   });
 
+  it("uses the configured fallback chain id when runtime metadata is unavailable", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce({
+        code: 4902,
+        message: "Unknown chain."
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    await connectWalletToSpawnChain(
+      "base",
+      { request },
+      null,
+      {
+        VITE_SPAWN_CHAIN_ID: "20260326",
+        VITE_SPAWN_CHAIN_NAME: "Automaton Playground",
+        VITE_SPAWN_CHAIN_RPC_URL: "https://rpc.playground.example.com"
+      }
+    );
+
+    expect(request).toHaveBeenNthCalledWith(1, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x13525e6" }]
+    });
+    expect(request).toHaveBeenNthCalledWith(2, {
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: "0x13525e6",
+          chainName: "Automaton Playground",
+          rpcUrls: ["https://rpc.playground.example.com"],
+          nativeCurrency: {
+            name: "Ether",
+            symbol: "ETH",
+            decimals: 18
+          },
+          blockExplorerUrls: ["https://basescan.org"]
+        }
+      ]
+    });
+    expect(request).toHaveBeenNthCalledWith(3, {
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x13525e6" }]
+    });
+  });
+
   it("disables the wallet action on the wrong chain or after partial payment", () => {
     const session = createSession();
     const payment = createPayment();
@@ -211,8 +310,8 @@ describe("spawn payment executor", () => {
       getSpawnPaymentAvailability(session, payment, {
         address: "0xabc",
         chainId: 1
-      }).disabledReason
-    ).toContain("8453");
+      }, createPlaygroundMetadata()).disabledReason
+    ).toContain("20260326");
 
     expect(
       getSpawnPaymentAvailability(
@@ -223,7 +322,8 @@ describe("spawn payment executor", () => {
         {
           address: "0xabc",
           chainId: 8453
-        }
+        },
+        createPlaygroundMetadata()
       ).disabledReason
     ).toContain("Partial payments");
   });
@@ -235,6 +335,11 @@ describe("spawn payment executor", () => {
     });
 
     expect(rejected).toBe("Wallet rejected the payment transaction.");
+    expect(
+      formatSpawnPaymentError(
+        new Error("insufficient funds for gas * price + value")
+      )
+    ).toBe("Connected wallet does not have enough ETH to cover playground gas.");
 
     await expect(
       executeSpawnPayment(
@@ -243,6 +348,7 @@ describe("spawn payment executor", () => {
         }),
         "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
         { request: vi.fn() },
+        null,
         {
           VITE_SPAWN_USDC_CONTRACT_ADDRESS:
             "0x3333333333333333333333333333333333333333"

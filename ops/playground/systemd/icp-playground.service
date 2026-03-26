@@ -1,0 +1,23 @@
+[Unit]
+Description=Automaton Playground local ICP runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/automaton-playground/playground.env
+Environment=PLAYGROUND_REPO_ROOT=/srv/automaton-launchpad/current
+Environment=PLAYGROUND_ICP_NETWORK_NAME=local
+Environment=PLAYGROUND_ICP_HOME=/srv/automaton-playground/icp-home
+WorkingDirectory=/srv/automaton-launchpad/current
+ExecStartPre=/bin/sh -lc 'mkdir -p "$PLAYGROUND_ICP_HOME"'
+ExecStart=/bin/sh -lc 'export ICP_HOME="$PLAYGROUND_ICP_HOME"; exec icp --project-root-override "$PLAYGROUND_REPO_ROOT" network start --background "$PLAYGROUND_ICP_NETWORK_NAME"'
+ExecStartPost=/bin/sh -lc 'export ICP_HOME="$PLAYGROUND_ICP_HOME"; exec icp --project-root-override "$PLAYGROUND_REPO_ROOT" network ping "$PLAYGROUND_ICP_NETWORK_NAME"'
+ExecStop=/bin/sh -lc 'export ICP_HOME="$PLAYGROUND_ICP_HOME"; icp --project-root-override "$PLAYGROUND_REPO_ROOT" network stop "$PLAYGROUND_ICP_NETWORK_NAME" || true'
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+

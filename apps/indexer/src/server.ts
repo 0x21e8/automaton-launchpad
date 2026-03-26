@@ -10,13 +10,20 @@ import { resolveIndexerConfig, type IndexerConfigOverrides } from "./config.js";
 import { LiveAutomatonClient, type AutomatonClient } from "./integrations/automaton-client.js";
 import { FactoryClient } from "./integrations/factory-client.js";
 import {
+  createFaucetService,
+  type FaucetSeedRunner,
+  type FaucetService
+} from "./lib/faucet.js";
+import {
   AutomatonIndexer,
   FixedEthUsdPriceSource,
   type AutomatonIndexerOptions,
   type EthUsdPriceSource
 } from "./polling/automaton-indexer.js";
 import { automatonRoutes } from "./routes/automatons.js";
+import { faucetRoutes } from "./routes/faucet.js";
 import { healthRoutes } from "./routes/health.js";
+import { playgroundRoutes } from "./routes/playground.js";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { spawnSessionRoutes } from "./routes/spawn-sessions.js";
 import { createSqliteStore, type IndexerStore } from "./store/sqlite.js";
@@ -57,6 +64,8 @@ export interface BuildServerOptions {
   automatonIndexer?: AutomatonIndexer;
   ethUsdPriceSource?: EthUsdPriceSource;
   factoryClient?: FactoryClient;
+  faucetSeedRunner?: FaucetSeedRunner;
+  faucetService?: FaucetService;
   logger?: boolean | FastifyBaseLogger;
   startPolling?: boolean;
   store?: IndexerStore;
@@ -91,6 +100,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       priceSource: options.ethUsdPriceSource ?? new FixedEthUsdPriceSource()
     } satisfies AutomatonIndexerOptions);
   automatonIndexer.setEventPublisher(realtimeHub);
+  const faucetService =
+    options.faucetService ??
+    createFaucetService({
+      metadata: config.playground.metadata.faucet,
+      seedWallet: options.faucetSeedRunner,
+      store
+    });
 
   const app = Fastify({
     logger: options.logger ?? false
@@ -101,6 +117,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   app.decorate("startedAt", Date.now());
   app.decorate("indexerConfig", config);
   app.decorate("indexerStore", store);
+  app.decorate("faucetService", faucetService);
   app.decorate("realtimeHub", realtimeHub);
 
   app.register(websocket);
@@ -152,6 +169,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   app.register(healthRoutes);
   app.register(automatonRoutes);
+  app.register(playgroundRoutes);
+  app.register(faucetRoutes);
   app.register(realtimeRoutes);
   app.register(spawnSessionRoutes);
 

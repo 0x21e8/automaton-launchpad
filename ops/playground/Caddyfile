@@ -1,0 +1,20 @@
+{
+	email {$PLAYGROUND_ACME_EMAIL}
+}
+
+https://{$PLAYGROUND_DOMAIN} {
+	encode zstd gzip
+
+	@indexer path /api/* /health /ws/* /ws/events*
+	reverse_proxy @indexer 127.0.0.1:{$PLAYGROUND_INDEXER_PORT}
+
+	handle {
+		reverse_proxy 127.0.0.1:{$PLAYGROUND_WEB_PORT}
+	}
+}
+
+https://{$PLAYGROUND_RPC_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:{$PLAYGROUND_RPC_GATEWAY_PORT}
+}
+

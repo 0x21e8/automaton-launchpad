@@ -1,10 +1,17 @@
 import { fileURLToPath } from "node:url";
 
+import type { PlaygroundMetadata } from "@ic-automaton/shared";
+
 import {
   INDEXER_NETWORK_TARGETS,
   INDEXER_TARGET_CONFIG,
   type IndexerTargetConfig
 } from "./indexer.config.js";
+
+export interface IndexerPlaygroundConfig {
+  metadata: PlaygroundMetadata;
+  statusFilePath: string;
+}
 
 export interface IndexerConfig {
   host: string;
@@ -18,6 +25,7 @@ export interface IndexerConfig {
   fastPollIntervalMs: number;
   slowPollIntervalMs: number;
   pricePollIntervalMs: number;
+  playground: IndexerPlaygroundConfig;
 }
 
 export interface IndexerConfigOverrides {
@@ -31,15 +39,30 @@ export interface IndexerConfigOverrides {
   fastPollIntervalMs?: number;
   slowPollIntervalMs?: number;
   pricePollIntervalMs?: number;
+  playground?: IndexerPlaygroundConfig;
 }
 
 const DEFAULT_DATABASE_PATH = fileURLToPath(
   new URL("../data/indexer.sqlite", import.meta.url)
 );
+const DEFAULT_PLAYGROUND_STATUS_FILE_PATH = fileURLToPath(
+  new URL("../tmp/playground-status.json", import.meta.url)
+);
 const DEFAULT_CORS_ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://localhost:5173"
 ] as const;
+const DEFAULT_PLAYGROUND_ENVIRONMENT_LABEL = "Local development";
+const DEFAULT_PLAYGROUND_CHAIN_NAME = "Base Local Fork";
+const DEFAULT_PLAYGROUND_PUBLIC_RPC_HOST = "127.0.0.1";
+const DEFAULT_PLAYGROUND_PUBLIC_RPC_PORT = 8545;
+const DEFAULT_PLAYGROUND_CHAIN_ID = 8453;
+const DEFAULT_PLAYGROUND_RESET_CADENCE_LABEL = "Manual local resets";
+const DEFAULT_PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS = 86_400;
+const DEFAULT_PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET = 1;
+const DEFAULT_PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP = 1;
+const DEFAULT_PLAYGROUND_FAUCET_ETH_AMOUNT = "1";
+const DEFAULT_PLAYGROUND_FAUCET_USDC_AMOUNT = "250";
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const CRC32_TABLE = buildCrc32Table();
 
@@ -58,6 +81,43 @@ function parseOptionalInteger(value: string | undefined) {
   }
 
   return Number(value);
+}
+
+function parseOptionalBoolean(value: string | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return undefined;
+}
+
+function parseOptionalTimestamp(value: string | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  if (normalized === "") {
+    return null;
+  }
+
+  const numericValue = Number(normalized);
+  if (Number.isFinite(numericValue)) {
+    return numericValue;
+  }
+
+  const parsed = Date.parse(normalized);
+  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 function parseOriginList(value: string | undefined) {
@@ -259,6 +319,86 @@ function resolveIcHost(config: IndexerTargetConfig) {
   return `http://${config.network.local.host}:${config.network.local.port}`;
 }
 
+function resolveLocalPlaygroundRpcUrl(env: NodeJS.ProcessEnv) {
+  const explicitRpcUrl = env.LOCAL_EVM_RPC_URL?.trim();
+
+  if (explicitRpcUrl) {
+    return explicitRpcUrl;
+  }
+
+  const host = env.LOCAL_EVM_HOST?.trim() || DEFAULT_PLAYGROUND_PUBLIC_RPC_HOST;
+  const port = parseNumber(env.LOCAL_EVM_PORT, DEFAULT_PLAYGROUND_PUBLIC_RPC_PORT);
+
+  return `http://${host}:${port}`;
+}
+
+function resolvePlaygroundConfig(env: NodeJS.ProcessEnv): IndexerPlaygroundConfig {
+  const localChainId = parseNumber(env.LOCAL_EVM_CHAIN_ID, DEFAULT_PLAYGROUND_CHAIN_ID);
+  const chainId = parseNumber(env.PLAYGROUND_CHAIN_ID, localChainId);
+  const lastResetAt = parseOptionalTimestamp(env.PLAYGROUND_LAST_RESET_AT);
+  const nextResetAt = parseOptionalTimestamp(env.PLAYGROUND_NEXT_RESET_AT);
+
+  return {
+    metadata: {
+      environmentLabel:
+        env.PLAYGROUND_ENV_LABEL?.trim() || DEFAULT_PLAYGROUND_ENVIRONMENT_LABEL,
+      environmentVersion: env.PLAYGROUND_ENV_VERSION?.trim() || null,
+      maintenance: parseOptionalBoolean(env.PLAYGROUND_MAINTENANCE) ?? false,
+      chain: {
+        id: chainId,
+        name: env.PLAYGROUND_CHAIN_NAME?.trim() || DEFAULT_PLAYGROUND_CHAIN_NAME,
+        publicRpcUrl:
+          env.PLAYGROUND_PUBLIC_RPC_URL?.trim() || resolveLocalPlaygroundRpcUrl(env),
+        nativeCurrency: {
+          name: env.PLAYGROUND_NATIVE_CURRENCY_NAME?.trim() || "Ether",
+          symbol: env.PLAYGROUND_NATIVE_CURRENCY_SYMBOL?.trim() || "ETH",
+          decimals: parseNumber(env.PLAYGROUND_NATIVE_CURRENCY_DECIMALS, 18)
+        },
+        explorerUrl: env.PLAYGROUND_EXPLORER_URL?.trim() || null
+      },
+      faucet: {
+        available: parseOptionalBoolean(env.PLAYGROUND_FAUCET_ENABLED) ?? false,
+        claimLimits: {
+          windowSeconds: parseNumber(
+            env.PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS,
+            DEFAULT_PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS
+          ),
+          maxClaimsPerWallet: parseNumber(
+            env.PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET,
+            DEFAULT_PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET
+          ),
+          maxClaimsPerIp: parseNumber(
+            env.PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP,
+            DEFAULT_PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP
+          )
+        },
+        claimAssetAmounts: [
+          {
+            asset: "eth",
+            amount: env.PLAYGROUND_FAUCET_ETH_AMOUNT?.trim() || DEFAULT_PLAYGROUND_FAUCET_ETH_AMOUNT,
+            decimals: 18
+          },
+          {
+            asset: "usdc",
+            amount:
+              env.PLAYGROUND_FAUCET_USDC_AMOUNT?.trim() || DEFAULT_PLAYGROUND_FAUCET_USDC_AMOUNT,
+            decimals: 6
+          }
+        ]
+      },
+      reset: {
+        lastResetAt: lastResetAt ?? null,
+        nextResetAt: nextResetAt ?? null,
+        cadenceLabel:
+          env.PLAYGROUND_RESET_CADENCE_LABEL?.trim() ||
+          DEFAULT_PLAYGROUND_RESET_CADENCE_LABEL
+      }
+    },
+    statusFilePath:
+      env.PLAYGROUND_STATUS_FILE?.trim() || DEFAULT_PLAYGROUND_STATUS_FILE_PATH
+  };
+}
+
 export function resolveIndexerConfig(
   env: NodeJS.ProcessEnv = process.env,
   overrides: IndexerConfigOverrides = {}
@@ -289,6 +429,7 @@ export function resolveIndexerConfig(
     slowPollIntervalMs:
       overrides.slowPollIntervalMs ?? parseNumber(env.INDEXER_SLOW_POLL_INTERVAL_MS, 300_000),
     pricePollIntervalMs:
-      overrides.pricePollIntervalMs ?? parseNumber(env.INDEXER_PRICE_POLL_INTERVAL_MS, 60_000)
+      overrides.pricePollIntervalMs ?? parseNumber(env.INDEXER_PRICE_POLL_INTERVAL_MS, 60_000),
+    playground: overrides.playground ?? resolvePlaygroundConfig(env)
   };
 }

@@ -92,3 +92,19 @@ CREATE TABLE IF NOT EXISTS spawned_automaton_registry (
 
 CREATE INDEX IF NOT EXISTS spawned_automaton_registry_session_idx
   ON spawned_automaton_registry (session_id);
+
+CREATE TABLE IF NOT EXISTS faucet_claims (
+  claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_address TEXT NOT NULL,
+  ip_hash TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  eth_amount TEXT NOT NULL,
+  usdc_amount TEXT NOT NULL,
+  tx_summary_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS faucet_claims_wallet_claimed_at_idx
+  ON faucet_claims (wallet_address, claimed_at DESC);
+
+CREATE INDEX IF NOT EXISTS faucet_claims_ip_claimed_at_idx
+  ON faucet_claims (ip_hash, claimed_at DESC);

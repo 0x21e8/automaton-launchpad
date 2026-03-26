@@ -1,0 +1,163 @@
+name: automaton-playground
+
+services:
+  anvil:
+    image: ${PLAYGROUND_ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:stable}
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        extra_args=""
+        if [ -n "$${LOCAL_EVM_FORK_BLOCK_NUMBER:-}" ]; then
+          extra_args="--fork-block-number $${LOCAL_EVM_FORK_BLOCK_NUMBER}"
+        fi
+        exec anvil \
+          --host 0.0.0.0 \
+          --port ${LOCAL_EVM_PORT:-8545} \
+          --chain-id ${PLAYGROUND_CHAIN_ID:-20260326} \
+          --fork-url ${LOCAL_EVM_FORK_URL:-https://example.invalid/base} \
+          $$extra_args
+    environment:
+      LOCAL_EVM_FORK_BLOCK_NUMBER: ${LOCAL_EVM_FORK_BLOCK_NUMBER:-}
+    ports:
+      - "127.0.0.1:${LOCAL_EVM_PORT:-8545}:8545"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "cast rpc --rpc-url http://127.0.0.1:8545 eth_chainId >/dev/null 2>&1"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  rpc-gateway:
+    image: ${PLAYGROUND_RPC_GATEWAY_IMAGE:-ghcr.io/example/automaton-playground-rpc-gateway:main}
+    restart: unless-stopped
+    depends_on:
+      anvil:
+        condition: service_healthy
+    environment:
+      RPC_GATEWAY_HOST: 0.0.0.0
+      RPC_GATEWAY_PORT: ${PLAYGROUND_RPC_GATEWAY_PORT:-3002}
+      RPC_GATEWAY_UPSTREAM_URL: http://anvil:8545
+      PLAYGROUND_CHAIN_ID: ${PLAYGROUND_CHAIN_ID:-20260326}
+      RPC_GATEWAY_BODY_LIMIT_BYTES: ${RPC_GATEWAY_BODY_LIMIT_BYTES:-32768}
+      RPC_GATEWAY_RATE_LIMIT_WINDOW_MS: ${RPC_GATEWAY_RATE_LIMIT_WINDOW_MS:-60000}
+      RPC_GATEWAY_RATE_LIMIT_MAX_REQUESTS: ${RPC_GATEWAY_RATE_LIMIT_MAX_REQUESTS:-60}
+    ports:
+      - "127.0.0.1:${PLAYGROUND_RPC_GATEWAY_PORT:-3002}:3002"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "node -e \"fetch('http://127.0.0.1:3002/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  indexer:
+    image: ${PLAYGROUND_INDEXER_IMAGE:-ghcr.io/example/automaton-playground-indexer:main}
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      anvil:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        if [ -n "$${INDEXER_FACTORY_CANISTER_ID:-}" ]; then
+          export INDEXER_FACTORY_CANISTER_ID
+        elif [ -n "$${INDEXER_FACTORY_CANISTER_ID_FILE:-}" ]; then
+          until [ -s "$${INDEXER_FACTORY_CANISTER_ID_FILE}" ]; do
+            sleep 2
+          done
+          export INDEXER_FACTORY_CANISTER_ID="$$(tr -d '\r\n' < "$${INDEXER_FACTORY_CANISTER_ID_FILE}")"
+        else
+          echo "INDEXER_FACTORY_CANISTER_ID or INDEXER_FACTORY_CANISTER_ID_FILE must be set" >&2
+          exit 1
+        fi
+        exec node /app/apps/indexer/dist/server.js
+    environment:
+      HOST: 127.0.0.1
+      PORT: ${PLAYGROUND_INDEXER_PORT:-3001}
+      INDEXER_FACTORY_CANISTER_ID: ${INDEXER_FACTORY_CANISTER_ID:-}
+      INDEXER_FACTORY_CANISTER_ID_FILE: ${PLAYGROUND_FACTORY_CANISTER_ID_FILE:-/srv/automaton-playground/state/factory-canister-id.txt}
+      INDEXER_DB_PATH: ${INDEXER_DB_PATH:-/srv/automaton-playground/state/indexer.sqlite}
+      INDEXER_INGESTION_NETWORK_TARGET: local
+      INDEXER_INGESTION_LOCAL_HOST: 127.0.0.1
+      INDEXER_INGESTION_LOCAL_PORT: ${PLAYGROUND_LOCAL_REPLICA_PORT:-8000}
+      INDEXER_CORS_ALLOWED_ORIGINS: ${INDEXER_CORS_ALLOWED_ORIGINS:-https://playground.example.com}
+      PLAYGROUND_STATUS_FILE: ${PLAYGROUND_STATUS_FILE:-/srv/automaton-playground/state/playground-status.json}
+      PLAYGROUND_ENV_LABEL: ${PLAYGROUND_ENV_LABEL:-Automaton Playground}
+      PLAYGROUND_ENV_VERSION: ${PLAYGROUND_ENV_VERSION:-}
+      PLAYGROUND_CHAIN_ID: ${PLAYGROUND_CHAIN_ID:-20260326}
+      PLAYGROUND_CHAIN_NAME: ${PLAYGROUND_CHAIN_NAME:-Automaton Playground}
+      PLAYGROUND_PUBLIC_RPC_URL: ${PLAYGROUND_PUBLIC_RPC_URL:-https://rpc.playground.example.com}
+      PLAYGROUND_NATIVE_CURRENCY_NAME: ${PLAYGROUND_NATIVE_CURRENCY_NAME:-Ether}
+      PLAYGROUND_NATIVE_CURRENCY_SYMBOL: ${PLAYGROUND_NATIVE_CURRENCY_SYMBOL:-ETH}
+      PLAYGROUND_NATIVE_CURRENCY_DECIMALS: ${PLAYGROUND_NATIVE_CURRENCY_DECIMALS:-18}
+      PLAYGROUND_EXPLORER_URL: ${PLAYGROUND_EXPLORER_URL:-}
+      PLAYGROUND_FAUCET_ENABLED: ${PLAYGROUND_FAUCET_ENABLED:-1}
+      PLAYGROUND_FAUCET_ETH_AMOUNT: ${PLAYGROUND_FAUCET_ETH_AMOUNT:-1}
+      PLAYGROUND_FAUCET_USDC_AMOUNT: ${PLAYGROUND_FAUCET_USDC_AMOUNT:-250}
+      PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS: ${PLAYGROUND_FAUCET_CLAIM_WINDOW_SECONDS:-86400}
+      PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET: ${PLAYGROUND_FAUCET_MAX_CLAIMS_PER_WALLET:-1}
+      PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP: ${PLAYGROUND_FAUCET_MAX_CLAIMS_PER_IP:-20}
+      PLAYGROUND_RESET_CADENCE_LABEL: ${PLAYGROUND_RESET_CADENCE_LABEL:-Scheduled hard resets}
+      LOCAL_EVM_RPC_URL: ${LOCAL_EVM_RPC_URL:-http://127.0.0.1:8545}
+      LOCAL_EVM_DEPLOYMENT_FILE: ${LOCAL_EVM_DEPLOYMENT_FILE:-/srv/automaton-playground/state/local-escrow-deployment.json}
+    volumes:
+      - ${PLAYGROUND_STATE_DIR:-/srv/automaton-playground/state}:${PLAYGROUND_STATE_DIR:-/srv/automaton-playground/state}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "node -e \"fetch('http://127.0.0.1:${PLAYGROUND_INDEXER_PORT:-3001}/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    image: ${PLAYGROUND_WEB_IMAGE:-ghcr.io/example/automaton-playground-web:main}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PLAYGROUND_WEB_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  otterscan:
+    image: ${PLAYGROUND_OTTERSCAN_IMAGE:-otterscan/otterscan:latest}
+    profiles:
+      - otterscan
+    restart: unless-stopped
+    environment:
+      ERIGON_URL: ${PLAYGROUND_OTTERSCAN_RPC_URL:-http://127.0.0.1:8545}
+    ports:
+      - "127.0.0.1:${PLAYGROUND_OTTERSCAN_PORT:-5100}:80"
+
+  grafana:
+    image: ${PLAYGROUND_GRAFANA_IMAGE:-grafana/grafana-oss:11.6.0}
+    profiles:
+      - monitoring
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: ${PLAYGROUND_GRAFANA_PORT:-3003}
+      GF_SECURITY_ADMIN_USER: ${PLAYGROUND_GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${PLAYGROUND_GRAFANA_ADMIN_PASSWORD:-change-me}
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  grafana-data:

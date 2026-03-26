@@ -1,20 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Eip1193RequestArgs } from "../lib/wallet-transport";
+import {
+  observeWalletProviders,
+  selectPreferredWalletProvider,
+  type InjectedWalletProvider,
+  type WalletProviderOption
+} from "./eip6963";
 
-interface Eip1193Provider {
-  request<T = unknown>(args: Eip1193RequestArgs): Promise<T>;
-  on?(event: "accountsChanged" | "chainChanged" | "disconnect", handler: (...args: any[]) => void): void;
-  removeListener?(
-    event: "accountsChanged" | "chainChanged" | "disconnect",
-    handler: (...args: any[]) => void
-  ): void;
-}
-
-declare global {
-  interface Window {
-    ethereum?: Eip1193Provider;
-  }
-}
+const PREFERRED_WALLET_STORAGE_KEY =
+  "automaton.launchpad.preferred-wallet-provider";
 
 function normalizeAddress(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
@@ -26,6 +20,10 @@ function formatAddress(address: string | null): string {
   }
 
   return `Wallet detected ${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatShortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function readChainId(value: unknown): number | null {
@@ -49,10 +47,14 @@ export interface WalletSession {
   isConnecting: boolean;
   isConnected: boolean;
   errorMessage: string | null;
+  providers: WalletProviderOption[];
+  selectedProviderId: string | null;
+  selectedProviderName: string | null;
   walletLabel: string;
   request: <T = unknown>(args: Eip1193RequestArgs) => Promise<T>;
   connect: () => Promise<void>;
   disconnect: () => void;
+  setSelectedProvider: (providerId: string) => void;
 }
 
 export function useWalletSession(): WalletSession {
@@ -60,31 +62,89 @@ export function useWalletSession(): WalletSession {
   const [chainId, setChainId] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const provider = typeof window === "undefined" ? undefined : window.ethereum;
+  const [providers, setProviders] = useState<WalletProviderOption[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    const storedProviderId = window.localStorage.getItem(
+      PREFERRED_WALLET_STORAGE_KEY
+    );
+
+    return storedProviderId?.trim() || null;
+  });
+  const selectedProvider = useMemo(
+    () => selectPreferredWalletProvider(providers, selectedProviderId),
+    [providers, selectedProviderId]
+  );
+  const provider: InjectedWalletProvider | undefined = selectedProvider?.provider;
   const hasProvider = provider !== undefined;
 
   useEffect(() => {
+    return observeWalletProviders((nextProviders) => {
+      setProviders(nextProviders);
+    });
+  }, []);
+
+  useEffect(() => {
+    const nextSelectedProvider = selectPreferredWalletProvider(
+      providers,
+      selectedProviderId
+    );
+    const nextProviderId = nextSelectedProvider?.id ?? null;
+
+    if (selectedProviderId !== nextProviderId) {
+      setSelectedProviderId(nextProviderId);
+    }
+  }, [providers, selectedProviderId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (selectedProviderId === null) {
+      window.localStorage.removeItem(PREFERRED_WALLET_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(
+      PREFERRED_WALLET_STORAGE_KEY,
+      selectedProviderId
+    );
+  }, [selectedProviderId]);
+
+  useEffect(() => {
     if (provider === undefined) {
+      setAddress(null);
+      setChainId(null);
       return;
     }
 
     let mounted = true;
 
-    void provider.request<string[]>({ method: "eth_accounts" }).then((accounts) => {
-      if (!mounted) {
-        return;
-      }
+    void provider
+      .request<string[]>({ method: "eth_accounts" })
+      .then((accounts) => {
+        if (!mounted) {
+          return;
+        }
 
-      setAddress(normalizeAddress(accounts[0] ?? null));
-    });
+        setAddress(normalizeAddress(accounts[0] ?? null));
+      })
+      .catch(() => undefined);
 
-    void provider.request<string>({ method: "eth_chainId" }).then((nextChainId) => {
-      if (!mounted) {
-        return;
-      }
+    void provider
+      .request<string>({ method: "eth_chainId" })
+      .then((nextChainId) => {
+        if (!mounted) {
+          return;
+        }
 
-      setChainId(readChainId(nextChainId));
-    });
+        setChainId(readChainId(nextChainId));
+      })
+      .catch(() => undefined);
 
     const handleAccountsChanged = (...args: any[]) => {
       setAddress(normalizeAddress((args[0] as unknown[] | undefined)?.[0] ?? null));
@@ -156,9 +216,21 @@ export function useWalletSession(): WalletSession {
     isConnecting,
     isConnected: address !== null,
     errorMessage,
-    walletLabel: formatAddress(address),
+    providers,
+    selectedProviderId,
+    selectedProviderName: selectedProvider?.name ?? null,
+    walletLabel:
+      address !== null
+        ? `${selectedProvider?.name ?? "Wallet"} ${formatShortAddress(address)}`
+        : selectedProvider?.name
+          ? `Connect ${selectedProvider.name}`
+          : formatAddress(address),
     request,
     connect,
-    disconnect
+    disconnect,
+    setSelectedProvider(providerId) {
+      setSelectedProviderId(providerId);
+      setErrorMessage(null);
+    }
   };
 }
