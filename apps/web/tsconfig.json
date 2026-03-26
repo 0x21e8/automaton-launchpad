@@ -1,8 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "baseUrl": "../..",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "@ic-automaton/shared": [
+        "packages/shared/src/index.ts"
+      ]
+    },
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
     "types": [
@@ -22,4 +28,3 @@
     "vite.config.ts"
   ]
 }
-
