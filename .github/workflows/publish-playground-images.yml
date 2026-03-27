@@ -1,0 +1,239 @@
+name: Publish Playground Images
+
+on:
+  workflow_call:
+    inputs:
+      environment_version:
+        description: Optional release label recorded in the image manifest.
+        required: false
+        type: string
+    outputs:
+      git_commit:
+        description: Git commit used to tag and publish the images.
+        value: ${{ jobs.publish-images.outputs.git_commit }}
+      environment_version:
+        description: Release label recorded in the image manifest.
+        value: ${{ jobs.publish-images.outputs.environment_version }}
+      web_image_ref:
+        description: Digest-pinned web image ref.
+        value: ${{ jobs.publish-images.outputs.web_image_ref }}
+      indexer_image_ref:
+        description: Digest-pinned indexer image ref.
+        value: ${{ jobs.publish-images.outputs.indexer_image_ref }}
+      rpc_gateway_image_ref:
+        description: Digest-pinned rpc-gateway image ref.
+        value: ${{ jobs.publish-images.outputs.rpc_gateway_image_ref }}
+  workflow_dispatch:
+    inputs:
+      environment_version:
+        description: Optional release label recorded in the image manifest.
+        required: false
+        type: string
+
+concurrency:
+  group: playground-vps-images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      git_commit: ${{ steps.manifest.outputs.git_commit }}
+      environment_version: ${{ steps.manifest.outputs.environment_version }}
+      web_image_ref: ${{ steps.manifest.outputs.web_image_ref }}
+      indexer_image_ref: ${{ steps.manifest.outputs.indexer_image_ref }}
+      rpc_gateway_image_ref: ${{ steps.manifest.outputs.rpc_gateway_image_ref }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "Run this workflow from ${DEFAULT_BRANCH} so the :main image tags stay aligned with deploys." >&2
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Setup buildx
+        run: docker buildx create --driver docker-container --name "playground-builder-${GITHUB_RUN_ID}" --use
+
+      - name: Build and publish images
+        shell: bash
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')
+          tag="$GITHUB_SHA"
+
+          build_and_push() {
+            local name="$1"
+            local dockerfile="$2"
+            shift 2
+            local image="ghcr.io/${owner}/automaton-playground-${name}"
+            local metadata_file="$RUNNER_TEMP/${name}-metadata.json"
+            docker buildx build \
+              --platform linux/amd64 \
+              --push \
+              --metadata-file "$metadata_file" \
+              -f "$dockerfile" \
+              -t "${image}:${tag}" \
+              -t "${image}:main" \
+              "$@" \
+              .
+          }
+
+          build_and_push web apps/web/Dockerfile --build-arg VITE_INDEXER_BASE_URL=
+          build_and_push indexer apps/indexer/Dockerfile
+          build_and_push rpc-gateway apps/rpc-gateway/Dockerfile
+
+      - name: Write image manifest
+        id: manifest
+        shell: bash
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          WORKFLOW_CALL_ENVIRONMENT_VERSION: ${{ inputs.environment_version }}
+          WORKFLOW_DISPATCH_ENVIRONMENT_VERSION: ${{ github.event.inputs.environment_version }}
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')
+          input_environment_version="${WORKFLOW_CALL_ENVIRONMENT_VERSION:-$WORKFLOW_DISPATCH_ENVIRONMENT_VERSION}"
+          node --input-type=module - "$RUNNER_TEMP" "$owner" "$GITHUB_SHA" "$input_environment_version" <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const [tempDir, owner, gitCommit, inputEnvironmentVersion] = process.argv.slice(2);
+
+          function readDigest(name) {
+            const metadata = JSON.parse(
+              fs.readFileSync(path.join(tempDir, `${name}-metadata.json`), "utf8")
+            );
+            const digest = metadata["containerimage.digest"];
+            if (typeof digest !== "string" || !digest.startsWith("sha256:")) {
+              throw new Error(`missing registry digest for ${name}`);
+            }
+            return digest;
+          }
+
+          const environmentVersion =
+            typeof inputEnvironmentVersion === "string" && inputEnvironmentVersion.trim() !== ""
+              ? inputEnvironmentVersion.trim()
+              : `playground-${gitCommit.slice(0, 12)}`;
+
+          const images = {
+            web: {
+              repository: `ghcr.io/${owner}/automaton-playground-web`,
+              tag: gitCommit,
+              digest: readDigest("web")
+            },
+            indexer: {
+              repository: `ghcr.io/${owner}/automaton-playground-indexer`,
+              tag: gitCommit,
+              digest: readDigest("indexer")
+            },
+            rpcGateway: {
+              repository: `ghcr.io/${owner}/automaton-playground-rpc-gateway`,
+              tag: gitCommit,
+              digest: readDigest("rpc-gateway")
+            }
+          };
+
+          for (const image of Object.values(images)) {
+            image.ref = `${image.repository}@${image.digest}`;
+          }
+
+          const manifest = {
+            schemaVersion: 1,
+            release: {
+              gitCommit,
+              environmentVersion,
+              createdAt: new Date().toISOString()
+            },
+            images
+          };
+
+          const manifestPath = path.join(tempDir, "playground-image-manifest.json");
+          const envPath = path.join(tempDir, "playground-image-refs.env");
+          fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+          fs.writeFileSync(
+            envPath,
+            [
+              `PLAYGROUND_WEB_IMAGE=${images.web.ref}`,
+              `PLAYGROUND_INDEXER_IMAGE=${images.indexer.ref}`,
+              `PLAYGROUND_RPC_GATEWAY_IMAGE=${images.rpcGateway.ref}`,
+              ""
+            ].join("\n")
+          );
+
+          const outputFile = process.env.GITHUB_OUTPUT;
+          if (!outputFile) {
+            throw new Error("GITHUB_OUTPUT is required");
+          }
+
+          fs.appendFileSync(
+            outputFile,
+            [
+              `git_commit=${gitCommit}`,
+              `environment_version=${environmentVersion}`,
+              `web_image_ref=${images.web.ref}`,
+              `indexer_image_ref=${images.indexer.ref}`,
+              `rpc_gateway_image_ref=${images.rpcGateway.ref}`,
+              ""
+            ].join("\n")
+          );
+
+          NODE
+
+      - name: Upload image artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: playground-image-manifest
+          path: ${{ runner.temp }}/playground-image-manifest.json
+          if-no-files-found: error
+
+      - name: Upload image env fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: playground-image-refs
+          path: ${{ runner.temp }}/playground-image-refs.env
+          if-no-files-found: error
+
+      - name: Summarize image refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Published playground runtime images:"
+            echo ""
+            node --input-type=module - "$RUNNER_TEMP/playground-image-manifest.json" <<'NODE'
+            import fs from "node:fs";
+
+            const manifestPath = process.argv[2];
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            for (const [name, image] of Object.entries(manifest.images)) {
+              console.log(`- ${name}: ${image.ref}`);
+            }
+            NODE
+            echo ""
+            echo "Artifacts:"
+            echo "- playground-image-manifest"
+            echo "- playground-image-refs"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -90,11 +90,18 @@ Set at least these values before continuing:
 - `CHILD_VERSION_COMMIT`
 - `PLAYGROUND_ENV_VERSION`
 
-For manual bring-up before CI deploys exist, also point the runtime images at tags you have already built and pushed:
+For manual bring-up before a VPS deploy, point the runtime images at immutable digest refs that were published by GitHub Actions:
 
 - `PLAYGROUND_WEB_IMAGE`
 - `PLAYGROUND_INDEXER_IMAGE`
 - `PLAYGROUND_RPC_GATEWAY_IMAGE`
+
+The easiest source is the `Publish Playground Images` workflow in GitHub Actions. It pushes the `web`, `indexer`, and `rpc-gateway` images to GHCR and uploads:
+
+- `playground-image-manifest` for the exact digest refs
+- `playground-image-refs` for a ready-to-source `.env` fragment
+
+The deploy workflows call that same reusable workflow, so the image publish step and the deploy step stay in sync.
 
 Keep these Phase 5/10 defaults unchanged unless you have a reason to change the topology:
 
@@ -312,6 +319,8 @@ Add these environment variables:
 
 - `PLAYGROUND_VPS_REPO_ROOT`
 - `PLAYGROUND_FORK_BLOCK_NUMBER` if you want a pinned fork block
+
+Before the first deploy, you can also run the `Publish Playground Images` workflow to prime GHCR and download the image refs artifact. Use the digest-pinned values from that artifact to populate `PLAYGROUND_WEB_IMAGE`, `PLAYGROUND_INDEXER_IMAGE`, and `PLAYGROUND_RPC_GATEWAY_IMAGE` in your VPS env file.
 
 The deploy workflows SSH to the VPS, upload a release manifest, and run:
 

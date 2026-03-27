@@ -120,7 +120,7 @@ Phase 10 adds a manifest-driven deploy entrypoint at [`scripts/deploy-playground
 
 The contract is:
 
-- build and push exact image digests for `web`, `indexer`, and `rpc-gateway`
+- build and push exact image digests for `web`, `indexer`, and `rpc-gateway` via the reusable `Publish Playground Images` workflow
 - write a release manifest shaped like [`ops/playground/release-manifest.example.json`](/Users/domwoe/Dev/projects/automaton-launchpad/ops/playground/release-manifest.example.json)
 - run the deploy script on the VPS with the shared env file already in place
 
@@ -137,6 +137,13 @@ bash ./scripts/deploy-playground-release.sh --manifest /path/to/release-manifest
 If `GHCR_USERNAME` and `GHCR_TOKEN` are exported, the deploy script logs into `ghcr.io` before pulling the exact image digests from the manifest.
 
 The script records each applied manifest under `PLAYGROUND_RELEASES_DIR` and keeps `current.json` there as the latest deployed manifest.
+
+If you want to publish the runtime images without touching the VPS, use the GitHub Actions workflow [`Publish Playground Images`](../../.github/workflows/publish-playground-images.yml). It pushes the `web`, `indexer`, and `rpc-gateway` images to GHCR and uploads:
+
+- `playground-image-manifest`
+- `playground-image-refs`
+
+Those artifacts are the source of truth for the digest-pinned `PLAYGROUND_WEB_IMAGE`, `PLAYGROUND_INDEXER_IMAGE`, and `PLAYGROUND_RPC_GATEWAY_IMAGE` values used during VPS setup.
 
 ## Notes
 

@@ -15,126 +15,112 @@ permissions:
 
 jobs:
   build-release:
+    uses: ./.github/workflows/publish-playground-images.yml
+    secrets: inherit
+
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     environment: playground-vps
+    needs:
+      - build-release
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-
-      - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Setup buildx
-        run: docker buildx create --driver docker-container --name "playground-builder-${GITHUB_RUN_ID}" --use
-
-      - name: Build and publish release images
+      - name: Render release manifest
         shell: bash
         env:
-          IMAGE_OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euo pipefail
-          owner=$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')
-          tag="$GITHUB_SHA"
-
-          build_and_push() {
-            local name="$1"
-            local dockerfile="$2"
-            shift 2
-            local image="ghcr.io/${owner}/automaton-playground-${name}"
-            local metadata_file="$RUNNER_TEMP/${name}-metadata.json"
-            docker buildx build \
-              --platform linux/amd64 \
-              --push \
-              --metadata-file "$metadata_file" \
-              -f "$dockerfile" \
-              -t "${image}:${tag}" \
-              -t "${image}:main" \
-              "$@" \
-              .
-          }
-
-          build_and_push web apps/web/Dockerfile --build-arg VITE_INDEXER_BASE_URL=
-          build_and_push indexer apps/indexer/Dockerfile
-          build_and_push rpc-gateway apps/rpc-gateway/Dockerfile
-
-      - name: Write release manifest
-        shell: bash
-        env:
-          IMAGE_OWNER: ${{ github.repository_owner }}
+          RELEASE_MODE: soft
+          RELEASE_GIT_COMMIT: ${{ needs.build-release.outputs.git_commit }}
+          RELEASE_ENVIRONMENT_VERSION: ${{ needs.build-release.outputs.environment_version }}
+          PLAYGROUND_WEB_IMAGE: ${{ needs.build-release.outputs.web_image_ref }}
+          PLAYGROUND_INDEXER_IMAGE: ${{ needs.build-release.outputs.indexer_image_ref }}
+          PLAYGROUND_RPC_GATEWAY_IMAGE: ${{ needs.build-release.outputs.rpc_gateway_image_ref }}
           CHILD_WASM_URL: ${{ secrets.PLAYGROUND_CHILD_WASM_URL }}
           CHILD_WASM_SHA256: ${{ secrets.PLAYGROUND_CHILD_WASM_SHA256 }}
           CHILD_VERSION_COMMIT: ${{ secrets.PLAYGROUND_CHILD_VERSION_COMMIT }}
           FORK_BLOCK_NUMBER: ${{ vars.PLAYGROUND_FORK_BLOCK_NUMBER }}
         run: |
           set -euo pipefail
-          owner=$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')
-          node --input-type=module - "$RUNNER_TEMP" "$owner" "$GITHUB_SHA" <<'NODE'
+          node --input-type=module - "$RUNNER_TEMP/release-manifest.json" <<'NODE'
           import fs from "node:fs";
           import path from "node:path";
 
-          const [tempDir, owner, gitCommit] = process.argv.slice(2);
+          const [manifestPath] = process.argv.slice(2);
 
-          function readDigest(name) {
-            const metadata = JSON.parse(
-              fs.readFileSync(path.join(tempDir, `${name}-metadata.json`), "utf8")
-            );
-            const digest = metadata["containerimage.digest"];
-            if (typeof digest !== "string" || !digest.startsWith("sha256:")) {
-              throw new Error(`missing registry digest for ${name}`);
+          function requireString(value, label) {
+            if (typeof value !== "string" || value.trim() === "") {
+              throw new Error(`${label} is required`);
             }
-            return digest;
+            return value.trim();
           }
 
-          const childWasmUrl = process.env.CHILD_WASM_URL?.trim();
-          const childWasmSha256 = process.env.CHILD_WASM_SHA256?.trim();
-          const childVersionCommit = process.env.CHILD_VERSION_COMMIT?.trim();
-
-          if (!childWasmUrl || !childWasmSha256 || !childVersionCommit) {
-            throw new Error("PLAYGROUND_CHILD_WASM_URL, PLAYGROUND_CHILD_WASM_SHA256, and PLAYGROUND_CHILD_VERSION_COMMIT are required");
+          function parseImageRef(value, label) {
+            const ref = requireString(value, label);
+            const atIndex = ref.lastIndexOf("@");
+            if (atIndex <= 0 || atIndex === ref.length - 1) {
+              throw new Error(`${label} must be an immutable digest ref`);
+            }
+            const repository = ref.slice(0, atIndex);
+            const digest = ref.slice(atIndex + 1);
+            if (!digest.startsWith("sha256:")) {
+              throw new Error(`${label} must use a sha256 digest`);
+            }
+            return { repository, digest, ref };
           }
 
-          const webDigest = readDigest("web");
-          const indexerDigest = readDigest("indexer");
-          const rpcGatewayDigest = readDigest("rpc-gateway");
-          const environmentVersion = `playground-${gitCommit.slice(0, 12)}`;
-          const forkBlockNumber =
-            typeof process.env.FORK_BLOCK_NUMBER === "string" && process.env.FORK_BLOCK_NUMBER.trim() !== ""
+          const gitCommit = requireString(process.env.RELEASE_GIT_COMMIT, "RELEASE_GIT_COMMIT");
+          const environmentVersion = requireString(
+            process.env.RELEASE_ENVIRONMENT_VERSION,
+            "RELEASE_ENVIRONMENT_VERSION"
+          );
+          const webImage = parseImageRef(process.env.PLAYGROUND_WEB_IMAGE, "PLAYGROUND_WEB_IMAGE");
+          const indexerImage = parseImageRef(
+            process.env.PLAYGROUND_INDEXER_IMAGE,
+            "PLAYGROUND_INDEXER_IMAGE"
+          );
+          const rpcGatewayImage = parseImageRef(
+            process.env.PLAYGROUND_RPC_GATEWAY_IMAGE,
+            "PLAYGROUND_RPC_GATEWAY_IMAGE"
+          );
+          const childWasmUrl = requireString(process.env.CHILD_WASM_URL, "CHILD_WASM_URL");
+          const childWasmSha256 = requireString(process.env.CHILD_WASM_SHA256, "CHILD_WASM_SHA256");
+          const childVersionCommit = requireString(
+            process.env.CHILD_VERSION_COMMIT,
+            "CHILD_VERSION_COMMIT"
+          );
+
+          const forkBlockNumberValue =
+            typeof process.env.FORK_BLOCK_NUMBER === "string" &&
+            process.env.FORK_BLOCK_NUMBER.trim() !== ""
               ? Number.parseInt(process.env.FORK_BLOCK_NUMBER, 10)
               : null;
 
           const manifest = {
             schemaVersion: 1,
             release: {
-              mode: "soft",
+              mode: process.env.RELEASE_MODE?.trim() || "soft",
               gitCommit,
               environmentVersion,
               createdAt: new Date().toISOString()
             },
             images: {
               web: {
-                repository: `ghcr.io/${owner}/automaton-playground-web`,
+                repository: webImage.repository,
                 tag: gitCommit,
-                digest: webDigest,
-                ref: `ghcr.io/${owner}/automaton-playground-web@${webDigest}`
+                digest: webImage.digest,
+                ref: webImage.ref
               },
               indexer: {
-                repository: `ghcr.io/${owner}/automaton-playground-indexer`,
+                repository: indexerImage.repository,
                 tag: gitCommit,
-                digest: indexerDigest,
-                ref: `ghcr.io/${owner}/automaton-playground-indexer@${indexerDigest}`
+                digest: indexerImage.digest,
+                ref: indexerImage.ref
               },
               rpcGateway: {
-                repository: `ghcr.io/${owner}/automaton-playground-rpc-gateway`,
+                repository: rpcGatewayImage.repository,
                 tag: gitCommit,
-                digest: rpcGatewayDigest,
-                ref: `ghcr.io/${owner}/automaton-playground-rpc-gateway@${rpcGatewayDigest}`
+                digest: rpcGatewayImage.digest,
+                ref: rpcGatewayImage.ref
               }
             },
             childArtifact: {
@@ -146,36 +132,12 @@ jobs:
             fork: {
               chainId: 20260326,
               upstreamRpcUrlEnv: "LOCAL_EVM_FORK_URL",
-              blockNumber: forkBlockNumber
+              blockNumber: forkBlockNumberValue
             }
           };
 
-          fs.writeFileSync(
-            path.join(tempDir, "release-manifest.json"),
-            `${JSON.stringify(manifest, null, 2)}\n`
-          );
+          fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
           NODE
-
-      - name: Upload release manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: soft-release-manifest
-          path: ${{ runner.temp }}/release-manifest.json
-          if-no-files-found: error
-
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: playground-vps
-    needs:
-      - build-release
-
-    steps:
-      - name: Download release manifest
-        uses: actions/download-artifact@v4
-        with:
-          name: soft-release-manifest
-          path: ${{ runner.temp }}/release-manifest
 
       - name: Install Tailscale
         if: ${{ secrets.PLAYGROUND_TAILSCALE_AUTHKEY != '' }}
@@ -238,7 +200,7 @@ jobs:
           repo_root="${PLAYGROUND_VPS_REPO_ROOT:-/srv/automaton-launchpad/current}"
           remote_manifest="/tmp/automaton-playground-release-${GITHUB_SHA}.json"
           remote_env="/tmp/automaton-playground-deploy-${GITHUB_RUN_ID}.env"
-          scp -P "$port" "$RUNNER_TEMP/release-manifest/release-manifest.json" "${VPS_USER}@${VPS_HOST}:${remote_manifest}"
+          scp -P "$port" "$RUNNER_TEMP/release-manifest.json" "${VPS_USER}@${VPS_HOST}:${remote_manifest}"
           scp -P "$port" "$RUNNER_TEMP/deploy.env" "${VPS_USER}@${VPS_HOST}:${remote_env}"
           ssh -p "$port" "${VPS_USER}@${VPS_HOST}" \
             "set -euo pipefail; . '${remote_env}'; repo_root=\${PLAYGROUND_VPS_REPO_ROOT:-${repo_root}}; bash \"\${repo_root}/scripts/deploy-playground-release.sh\" --manifest '${remote_manifest}'; rm -f '${remote_manifest}' '${remote_env}'"
