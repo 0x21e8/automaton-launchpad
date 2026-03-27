@@ -17,6 +17,7 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY apps/indexer apps/indexer
+COPY scripts scripts
 COPY scripts/seed-local-wallet.mjs scripts/seed-local-wallet.mjs
 
 RUN npm run build --workspace @ic-automaton/shared \

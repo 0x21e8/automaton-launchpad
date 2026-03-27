@@ -12,6 +12,7 @@ RUN npm ci
 
 COPY tsconfig.base.json ./
 COPY apps/rpc-gateway apps/rpc-gateway
+COPY scripts scripts
 
 RUN npm run build --workspace @ic-automaton/rpc-gateway \
   && npm prune --omit=dev

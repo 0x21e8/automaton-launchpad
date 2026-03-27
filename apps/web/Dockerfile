@@ -13,6 +13,7 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY apps/web apps/web
+COPY scripts scripts
 
 ARG VITE_INDEXER_BASE_URL=
 ARG VITE_SPAWN_CHAIN_NAME=
