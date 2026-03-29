@@ -4,9 +4,10 @@ services:
   anvil:
     image: ${PLAYGROUND_ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:stable}
     restart: unless-stopped
-    command:
+    entrypoint:
       - /bin/sh
       - -lc
+    command:
       - |
         set -eu
         extra_args=""

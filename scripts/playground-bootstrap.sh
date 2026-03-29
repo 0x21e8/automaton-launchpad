@@ -27,6 +27,7 @@ PLAYGROUND_ICP_ENVIRONMENT=${PLAYGROUND_ICP_ENVIRONMENT:-local}
 PLAYGROUND_LOCAL_REPLICA_HOST=${PLAYGROUND_LOCAL_REPLICA_HOST:-127.0.0.1}
 PLAYGROUND_LOCAL_REPLICA_PORT=${PLAYGROUND_LOCAL_REPLICA_PORT:-8000}
 PLAYGROUND_FACTORY_CANISTER=${PLAYGROUND_FACTORY_CANISTER:-factory}
+PLAYGROUND_FACTORY_TOP_UP_AMOUNT=${PLAYGROUND_FACTORY_TOP_UP_AMOUNT:-5t}
 LOCAL_EVM_HOST=${LOCAL_EVM_HOST:-127.0.0.1}
 LOCAL_EVM_PORT=${LOCAL_EVM_PORT:-8545}
 LOCAL_EVM_CHAIN_ID=${LOCAL_EVM_CHAIN_ID:-$PLAYGROUND_CHAIN_ID}
@@ -204,6 +205,53 @@ deploy_factory() {
   icp --project-root-override "$ROOT_DIR" canister install "$PLAYGROUND_FACTORY_CANISTER" -e "$PLAYGROUND_ICP_ENVIRONMENT" --mode reinstall --args "$init_args"
 }
 
+reconcile_factory_runtime_config() {
+  release_broadcast_args=$(
+    FACTORY_RENDER_TARGET="release-broadcast" \
+    FACTORY_VERSION_COMMIT="$CHILD_VERSION_COMMIT" \
+    FACTORY_CHILD_EVM_CHAIN_ID="$PLAYGROUND_CHAIN_ID" \
+    FACTORY_CHILD_EVM_RPC_URL="$LOCAL_EVM_RPC_URL" \
+    FACTORY_BASE_RPC_ENDPOINT="${FACTORY_BASE_RPC_ENDPOINT:-$LOCAL_EVM_RPC_URL}" \
+    FACTORY_RELEASE_BROADCAST_CHAIN_ID="$PLAYGROUND_CHAIN_ID" \
+    CHILD_WASM_PATH="$CHILD_WASM_PATH" \
+      run_with_repo_node node "$ROOT_DIR/scripts/render-factory-local-init-args.mjs"
+  )
+
+  printf 'y\n' | icp --project-root-override "$ROOT_DIR" canister call -e "$PLAYGROUND_ICP_ENVIRONMENT" "$PLAYGROUND_FACTORY_CANISTER" set_release_broadcast_config "$release_broadcast_args" >/dev/null
+
+  child_runtime_args=$(
+    FACTORY_RENDER_TARGET="child-runtime" \
+    FACTORY_VERSION_COMMIT="$CHILD_VERSION_COMMIT" \
+    FACTORY_CHILD_EVM_CHAIN_ID="$PLAYGROUND_CHAIN_ID" \
+    FACTORY_CHILD_EVM_RPC_URL="$LOCAL_EVM_RPC_URL" \
+    FACTORY_BASE_RPC_ENDPOINT="${FACTORY_BASE_RPC_ENDPOINT:-$LOCAL_EVM_RPC_URL}" \
+    CHILD_WASM_PATH="$CHILD_WASM_PATH" \
+      run_with_repo_node node "$ROOT_DIR/scripts/render-factory-local-init-args.mjs"
+  )
+
+  printf 'y\n' | icp --project-root-override "$ROOT_DIR" canister call -e "$PLAYGROUND_ICP_ENVIRONMENT" "$PLAYGROUND_FACTORY_CANISTER" set_child_runtime_config "$child_runtime_args" >/dev/null
+
+  operational_args=$(
+    FACTORY_RENDER_TARGET="operational" \
+    FACTORY_VERSION_COMMIT="$CHILD_VERSION_COMMIT" \
+    FACTORY_CHILD_EVM_CHAIN_ID="$PLAYGROUND_CHAIN_ID" \
+    FACTORY_CHILD_EVM_RPC_URL="$LOCAL_EVM_RPC_URL" \
+    FACTORY_BASE_RPC_ENDPOINT="${FACTORY_BASE_RPC_ENDPOINT:-$LOCAL_EVM_RPC_URL}" \
+    CHILD_WASM_PATH="$CHILD_WASM_PATH" \
+      run_with_repo_node node "$ROOT_DIR/scripts/render-factory-local-init-args.mjs"
+  )
+
+  printf 'y\n' | icp --project-root-override "$ROOT_DIR" canister call -e "$PLAYGROUND_ICP_ENVIRONMENT" "$PLAYGROUND_FACTORY_CANISTER" set_operational_config "$operational_args" >/dev/null
+}
+
+top_up_factory_canister() {
+  if [ -z "$PLAYGROUND_FACTORY_TOP_UP_AMOUNT" ]; then
+    return 0
+  fi
+
+  icp --project-root-override "$ROOT_DIR" canister top-up -e "$PLAYGROUND_ICP_ENVIRONMENT" --amount "$PLAYGROUND_FACTORY_TOP_UP_AMOUNT" "$PLAYGROUND_FACTORY_CANISTER" >/dev/null
+}
+
 resolve_factory_canister_id() {
   status_output=$(icp --project-root-override "$ROOT_DIR" canister status "$PLAYGROUND_FACTORY_CANISTER" -e "$PLAYGROUND_ICP_ENVIRONMENT")
   printf '%s\n' "$status_output" | run_with_repo_node node -e '
@@ -352,6 +400,8 @@ ensure_local_network
 ensure_anvil
 deploy_escrow
 deploy_factory
+reconcile_factory_runtime_config
+top_up_factory_canister
 upload_child_artifact
 seed_bootstrap_wallet
 

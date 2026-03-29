@@ -204,6 +204,13 @@ struct ChildStewardStatusView {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, candid::CandidType, serde::Deserialize)]
+enum ChildDerivedAddressResult {
+    Ok(String),
+    Err(String),
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn load_spawned_automaton_bootstrap_evidence(
     canister_id: &str,
 ) -> Result<AutomatonBootstrapEvidence, FactoryError> {
@@ -236,13 +243,22 @@ async fn load_spawned_automaton_bootstrap_evidence(
                 message: rejection_message(error),
             })?;
     if evm_address.is_none() {
-        let (derived_address,): (String,) =
+        let (derived_address_result,): (ChildDerivedAddressResult,) =
             ic_cdk::call(principal, "derive_automaton_evm_address", ())
                 .await
                 .map_err(|error| FactoryError::ManagementCallFailed {
                     method: "derive_automaton_evm_address".to_string(),
                     message: rejection_message(error),
                 })?;
+        let derived_address = match derived_address_result {
+            ChildDerivedAddressResult::Ok(address) => address,
+            ChildDerivedAddressResult::Err(message) => {
+                return Err(FactoryError::ManagementCallFailed {
+                    method: "derive_automaton_evm_address".to_string(),
+                    message,
+                });
+            }
+        };
         evm_address = Some(derived_address);
     }
 

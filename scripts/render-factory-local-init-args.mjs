@@ -10,6 +10,7 @@ const localInboxDeploymentPath =
   process.env.AUTOMATON_INBOX_DEPLOYMENT_FILE ??
   path.join(rootDir, "tmp", "automaton-inbox-deployment.json");
 const siblingRepo = normalizeOptionalString(process.env.IC_AUTOMATON_REPO);
+const renderTarget = normalizeOptionalString(process.env.FACTORY_RENDER_TARGET) ?? "init";
 
 const deployment = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
 const deploymentUsdcAddress = normalizeOptionalString(
@@ -170,7 +171,25 @@ const cyclesPerSpawn =
 const minPoolBalance = normalizeOptionalInteger(process.env.FACTORY_MIN_POOL_BALANCE) ?? 0;
 const estimatedOutcallCyclesPerInterval =
   normalizeOptionalInteger(process.env.FACTORY_ESTIMATED_OUTCALL_CYCLES_PER_INTERVAL) ?? 0;
+const releaseBroadcastChainId =
+  normalizeOptionalInteger(process.env.FACTORY_RELEASE_BROADCAST_CHAIN_ID) ??
+  childEvmChainId ??
+  8453;
+const releaseBroadcastMaxPriorityFeePerGas =
+  normalizeOptionalInteger(process.env.FACTORY_RELEASE_MAX_PRIORITY_FEE_PER_GAS) ?? 1_000_000_000;
+const releaseBroadcastMaxFeePerGas =
+  normalizeOptionalInteger(process.env.FACTORY_RELEASE_MAX_FEE_PER_GAS) ?? 3_000_000_000;
+const releaseBroadcastGasLimit =
+  normalizeOptionalInteger(process.env.FACTORY_RELEASE_GAS_LIMIT) ?? 250_000;
 const wasmSha256 = resolveOptionalWasmSha256();
+
+if (!["init", "child-runtime", "operational", "release-broadcast"].includes(renderTarget)) {
+  throw new Error(
+    `FACTORY_RENDER_TARGET must be one of init, child-runtime, operational, release-broadcast; got ${JSON.stringify(
+      renderTarget
+    )}`
+  );
+}
 
 if (
   childInboxContractAddress !== null &&
@@ -202,24 +221,26 @@ if (
   );
 }
 
-const candid = `(
+const childRuntimeRecord = `record {
+  ecdsa_key_name = ${renderOptText(childEcdsaKeyName)};
+  inbox_contract_address = ${renderOptText(childInboxContractAddress)};
+  evm_chain_id = ${renderOptNat(childEvmChainId)};
+  evm_rpc_url = ${renderOptText(childEvmRpcUrl)};
+  evm_confirmation_depth = ${renderOptNat(childEvmConfirmationDepth)};
+  evm_bootstrap_lookback_blocks = ${renderOptNat(childEvmBootstrapLookbackBlocks)};
+  http_allowed_domains = ${renderOptVecText(childHttpAllowedDomains)};
+  llm_canister_id = ${renderOptPrincipal(childLlmCanisterId)};
+  search_api_key = ${renderOptText(childSearchApiKey)};
+  cycle_topup_enabled = ${renderOptBool(childCycleTopupEnabled)};
+  auto_topup_cycle_threshold = ${renderOptNat(childAutoTopupCycleThreshold)};
+}`;
+
+const initCandid = `(
   opt record {
     admin_principals = vec {};
     fee_config = null;
     creation_cost_quote = null;
-    child_runtime = opt record {
-      ecdsa_key_name = ${renderOptText(childEcdsaKeyName)};
-      inbox_contract_address = ${renderOptText(childInboxContractAddress)};
-      evm_chain_id = ${renderOptNat(childEvmChainId)};
-      evm_rpc_url = ${renderOptText(childEvmRpcUrl)};
-      evm_confirmation_depth = ${renderOptNat(childEvmConfirmationDepth)};
-      evm_bootstrap_lookback_blocks = ${renderOptNat(childEvmBootstrapLookbackBlocks)};
-      http_allowed_domains = ${renderOptVecText(childHttpAllowedDomains)};
-      llm_canister_id = ${renderOptPrincipal(childLlmCanisterId)};
-      search_api_key = ${renderOptText(childSearchApiKey)};
-      cycle_topup_enabled = ${renderOptBool(childCycleTopupEnabled)};
-      auto_topup_cycle_threshold = ${renderOptNat(childAutoTopupCycleThreshold)};
-    };
+    child_runtime = opt ${childRuntimeRecord};
     pause = false;
     payment_address = opt "${paymentAddress}";
     escrow_contract_address = opt "${escrowAddress}";
@@ -233,4 +254,35 @@ const candid = `(
   }
 )`;
 
-process.stdout.write(`${candid}\n`);
+const childRuntimeCandid = `(
+  ${childRuntimeRecord}
+)`;
+
+const operationalCandid = `(
+  record {
+    cycles_per_spawn = ${cyclesPerSpawn};
+    min_pool_balance = ${minPoolBalance};
+    estimated_outcall_cycles_per_interval = ${estimatedOutcallCyclesPerInterval};
+  }
+)`;
+
+const releaseBroadcastCandid = `(
+  record {
+    chain_id = ${releaseBroadcastChainId};
+    max_priority_fee_per_gas = ${releaseBroadcastMaxPriorityFeePerGas};
+    max_fee_per_gas = ${releaseBroadcastMaxFeePerGas};
+    gas_limit = ${releaseBroadcastGasLimit};
+    ecdsa_key_name = "${escapeText(childEcdsaKeyName)}";
+  }
+)`;
+
+const output =
+  renderTarget === "child-runtime"
+    ? childRuntimeCandid
+    : renderTarget === "operational"
+      ? operationalCandid
+      : renderTarget === "release-broadcast"
+        ? releaseBroadcastCandid
+      : initCandid;
+
+process.stdout.write(`${output}\n`);

@@ -82,7 +82,10 @@ function callCanister(method, types = [], values = []) {
     environment,
     canister,
     method,
-    writeArgsFile(types, values)
+    "--args-file",
+    writeArgsFile(types, values),
+    "--args-format",
+    "hex"
   ];
   return execFileSync("icp", args, {
     cwd: rootDir,

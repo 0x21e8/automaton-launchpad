@@ -107,12 +107,13 @@ const depositTxHash = await sendTransaction({
   to: escrowAddress,
   data: calldata("deposit(bytes32,uint256)", [claimId, depositAmount])
 });
+const depositReceipt = await waitForReceipt(depositTxHash);
 
 const logs = await rpc("eth_getLogs", [
   {
     address: escrowAddress,
-    fromBlock: "0x0",
-    toBlock: "latest",
+    fromBlock: depositReceipt.blockNumber,
+    toBlock: depositReceipt.blockNumber,
     topics: [depositedTopic, [claimId]]
   }
 ]);
